@@ -213,27 +213,20 @@ def berechne_indikatoren(isin):
         perf_1w = ((c_today - close_1w) / close_1w) * 100
 
     # ==========================================
-    # KORRIGIERTER DIP-POTENTIAL-SCORE
+    # DIP-POTENTIAL-SCORE
     # ==========================================
-    # 1. RSI-Überverkauftheit (Je tiefer unter 45, desto besser)
     rsi_score = max(0, (45 - rsi_today)) * 1.5
-
-    # 2. Erholungspotenzial bis EMA50 (Ziel 1)
     ema50_upside_pct = max(0, ((ema50_heute - c_today) / c_today) * 100)
     ema50_score = ema50_upside_pct * 2.0
 
-    # 3. Nähe zum RSI-35-Trigger (Je knapper der Abstand, desto höher der Lauer-Score)
     rsi35_dist_abs = abs(rsi35_preis - c_today) / c_today * 100
     rsi35_proximity_score = max(0, 15 - rsi35_dist_abs) * 1.5
 
-    # 4. GD200 Trend-Sicherheitspuffer (Belohnt echten Puffer im intakten Trend)
     gd200_buffer_pct = ((c_today - gd200_heute) / gd200_heute) * 100
     if gd200_buffer_pct > 0:
-        gd200_score = min(
-            25.0, gd200_buffer_pct * 1.2
-        )  # Puffer wird bis max +25 Punkte belohnt
+        gd200_score = min(25.0, gd200_buffer_pct * 1.2)
     else:
-        gd200_score = -20.0  # Bestraft Abwärtstrends unter GD200
+        gd200_score = -20.0
 
     dip_score = round(
         rsi_score + ema50_score + rsi35_proximity_score + gd200_score, 1
@@ -419,21 +412,25 @@ with tab2:
 
         col_sort1, col_sort2 = st.columns([2, 2])
         with col_sort1:
-            sort_kriterium = st.selectbox("🏆 Watchlist Sortierung nach:", [
-                "🚀 Dip-Potential Score (Empfohlen)",
-                "🔥 RSI (Niedrigster zuerst)",
-                "🎯 Abstand zu RSI 35 Zielkurs",
-                "📊 Nähe zu GD200-Unterstützung",
-                "📉 Stärkster 1W-Rücksetzer",
-            ])
+            sort_kriterium = st.selectbox(
+                "🏆 Watchlist Sortierung nach:",
+                [
+                    "🔥 RSI (Niedrigster zuerst)",  # Default Sortierung!
+                    "🚀 Dip-Potential Score",
+                    "🎯 Abstand zu RSI 35 Zielkurs",
+                    "📊 Nähe zu GD200-Unterstützung",
+                    "📉 Stärkster 1W-Rücksetzer",
+                ],
+                index=0,
+            )
 
         df_watch = pd.DataFrame(watch)
 
-        # Sortierung basierend auf Wahl
-        if sort_kriterium == "🚀 Dip-Potential Score (Empfohlen)":
-            df_watch = df_watch.sort_values(by="Dip Score", ascending=False)
-        elif sort_kriterium == "🔥 RSI (Niedrigster zuerst)":
+        # 1. Sortierung basierend auf Benutzerauswahl
+        if sort_kriterium == "🔥 RSI (Niedrigster zuerst)":
             df_watch = df_watch.sort_values(by="RSI", ascending=True)
+        elif sort_kriterium == "🚀 Dip-Potential Score":
+            df_watch = df_watch.sort_values(by="Dip Score", ascending=False)
         elif sort_kriterium == "🎯 Abstand zu RSI 35 Zielkurs":
             df_watch = df_watch.sort_values(
                 by="RSI35_Abstand", ascending=False
@@ -443,9 +440,18 @@ with tab2:
         elif sort_kriterium == "📉 Stärkster 1W-Rücksetzer":
             df_watch = df_watch.sort_values(by="1W Perf.", ascending=True)
 
+        # 2. DEDUPLIZIERUNG: Bei gleicher ISIN oder identischem Ticker-Stamm (z.B. SEMI.AS vs SEMI.L) nur den besten behalten
+        df_watch["Ticker_Base"] = df_watch["Ticker"].apply(
+            lambda x: str(x).split(".")[0] if x else ""
+        )
+        df_watch = df_watch.drop_duplicates(subset=["ISIN"], keep="first")
+        df_watch = df_watch.drop_duplicates(
+            subset=["Ticker_Base"], keep="first"
+        )
+
         df_watch = df_watch.reset_index(drop=True)
 
-        # Ticker-Spalte dynamisch mit Medaillen/Rängen anreichern
+        # 3. Ticker-Spalte dynamisch mit Rängen & Medaillen anreichern
         def format_ticker_rank(row, idx):
             t = row["Ticker"]
             if idx == 0:
@@ -461,7 +467,7 @@ with tab2:
         display_df["Sektor"] = df_watch["Sektor"]
         display_df["ISIN"] = df_watch["ISIN"]
 
-        # Ticker erhält das Ranking direkt eingebettet
+        # Ranking direkt in die Ticker-Spalte einbetten
         display_df["Ticker"] = [
             format_ticker_rank(df_watch.iloc[i], i)
             for i in range(len(df_watch))
@@ -557,7 +563,7 @@ with tab2:
                 else:
                     styles.loc[idx, "Ticker"] = "font-weight: bold;"
 
-                # Dip Score Spalte hervorheben
+                # Dip Score Spalte
                 styles.loc[idx, "Dip Score"] = (
                     "font-weight: bold; text-align: center;"
                 )
