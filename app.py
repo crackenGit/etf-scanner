@@ -156,7 +156,6 @@ def berechne_indikatoren(isin):
     if data is None:
         return None, (kandidaten[0] if kandidaten else "N/A")
 
-    # Intraday-Zeitstempel
     yahoo_zeit = "k.A."
     try:
         if erfolgreicher_ticker:
@@ -202,6 +201,7 @@ def berechne_indikatoren(isin):
         rsi35_preis = c_today + rise_needed
 
     gd200_heute = float(gd200.iloc[-1])
+    ema50_heute = float(ema50.iloc[-1])
     gd200_vor_10d = (
         float(gd200.iloc[-11]) if len(gd200) >= 11 else gd200_heute
     )
@@ -212,14 +212,34 @@ def berechne_indikatoren(isin):
         close_1w = float(close.iloc[-6])
         perf_1w = ((c_today - close_1w) / close_1w) * 100
 
+    # ==========================================
+    # DIP-POTENTIAL-SCORE BERECHNUNG
+    # ==========================================
+    rsi_factor = max(0, (40 - rsi_today)) * 2.5
+    ema50_upside = (
+        max(0, ((ema50_heute - c_today) / c_today) * 100) * 1.5
+    )  # Potenzial bis EMA50
+    gd200_dist = ((c_today - gd200_heute) / gd200_heute) * 100
+
+    # GD200-Nähe-Bonus
+    gd_bonus = 0
+    if 0 <= gd200_dist <= 3.0:
+        gd_bonus = 10  # Optimaler Support-Bereich
+    elif -2.0 <= gd200_dist < 0:
+        gd_bonus = 5
+
+    dip_factor = abs(perf_1w) if perf_1w < 0 else 0
+    dip_score = round(rsi_factor + ema50_upside + gd_bonus + dip_factor, 1)
+
     return {
         "close": c_today,
         "rsi": rsi_today,
         "rsi35_preis": float(rsi35_preis),
         "gd200": gd200_heute,
-        "ema50": float(ema50.iloc[-1]),
+        "ema50": ema50_heute,
         "gd200_steigt": gd200_steigt,
         "perf_1w": perf_1w,
+        "dip_score": dip_score,
         "is_fallendes_messer": perf_1w < -3.0,
         "yahoo_zeit": yahoo_zeit,
     }, erfolgreicher_ticker
@@ -272,7 +292,7 @@ if "kauf_signale" not in st.session_state:
         if data.get("yahoo_zeit") and data["yahoo_zeit"] != "k.A.":
             letzter_zeitstempel = data["yahoo_zeit"]
 
-        c, rsi, rsi35, gd200, ema50, gd200_steigt, perf_1w, messer = (
+        c, rsi, rsi35, gd200, ema50, gd200_steigt, perf_1w, score, messer = (
             data["close"],
             data["rsi"],
             data["rsi35_preis"],
@@ -280,6 +300,7 @@ if "kauf_signale" not in st.session_state:
             data["ema50"],
             data["gd200_steigt"],
             data["perf_1w"],
+            data["dip_score"],
             data["is_fallendes_messer"],
         )
 
@@ -303,6 +324,7 @@ if "kauf_signale" not in st.session_state:
             "GD200_Abstand": gd200_abstand,
             "EMA50": ema50,
             "1W Perf.": perf_1w,
+            "Dip Score": score,
             "Zeitstempel": data["yahoo_zeit"],
             "Ist_Kaufsignal": is_kauf,
             "Ist_Portfolio": is_in_portfolio,
@@ -377,33 +399,37 @@ with tab1:
     else:
         st.info("Aktuell keine strikten Kaufsignale.")
 
-# --- TAB 2: WATCHLIST MIT RANKING ---
+# --- TAB 2: WATCHLIST MIT SMART-SCORE RANKING ---
 with tab2:
     watch = st.session_state.get("watchlist_signale", [])
     if watch:
         st.caption(
-            "💡 **Farblegende:** 🟩 **Grün** = Bedingung erfüllt (RSI < 35"
-            " bzw. GD200 ≤ Kurs) | 🟥 **Rot** = Nicht erfüllt | 🟪 **Lila** = Im"
-            " Portfolio"
+            "💡 **Farblegende:** 🥇/🥈/🥉 **Ranking in Ticker-Spalte** | 🟩"
+            " **Grün** = Bedingung erfüllt | 🟥 **Rot** = Nicht erfüllt | 🟪"
+            " **Lila** = Im Portfolio"
         )
-        
-        # --- RANKING & SORTIERUNGS-STEUERUNG ---
+
         col_sort1, col_sort2 = st.columns([2, 2])
         with col_sort1:
-            sort_kriterium = st.selectbox("🏆 Watchlist Ranking nach:", [
+            sort_kriterium = st.selectbox("🏆 Watchlist Sortierung nach:", [
+                "🚀 Dip-Potential Score (Empfohlen)",
                 "🔥 RSI (Niedrigster zuerst)",
                 "🎯 Abstand zu RSI 35 Zielkurs",
                 "📊 Nähe zu GD200-Unterstützung",
-                "📉 Stärkster 1W-Rücksetzer"
+                "📉 Stärkster 1W-Rücksetzer",
             ])
 
         df_watch = pd.DataFrame(watch)
 
-        # Sortierung basierend auf Nutzerwahl
-        if sort_kriterium == "🔥 RSI (Niedrigster zuerst)":
+        # Sortierung basierend auf Wahl
+        if sort_kriterium == "🚀 Dip-Potential Score (Empfohlen)":
+            df_watch = df_watch.sort_values(by="Dip Score", ascending=False)
+        elif sort_kriterium == "🔥 RSI (Niedrigster zuerst)":
             df_watch = df_watch.sort_values(by="RSI", ascending=True)
         elif sort_kriterium == "🎯 Abstand zu RSI 35 Zielkurs":
-            df_watch = df_watch.sort_values(by="RSI35_Abstand", ascending=False)
+            df_watch = df_watch.sort_values(
+                by="RSI35_Abstand", ascending=False
+            )
         elif sort_kriterium == "📊 Nähe zu GD200-Unterstützung":
             df_watch = df_watch.sort_values(by="GD200_Abstand", ascending=True)
         elif sort_kriterium == "📉 Stärkster 1W-Rücksetzer":
@@ -411,37 +437,43 @@ with tab2:
 
         df_watch = df_watch.reset_index(drop=True)
 
-        # Ränge hinzufügen (Rang 1, 2, 3 mit Medaillen-Badges)
-        def rang_badge(index):
-            if index == 0:
-                return "🥇 #1"
-            elif index == 1:
-                return "🥈 #2"
-            elif index == 2:
-                return "🥉 #3"
+        # Ticker-Spalte dynamisch mit Medaillen/Rängen anreichern
+        def format_ticker_rank(row, idx):
+            t = row["Ticker"]
+            if idx == 0:
+                return f"🥇 #{idx + 1} {t}"
+            elif idx == 1:
+                return f"🥈 #{idx + 1} {t}"
+            elif idx == 2:
+                return f"🥉 #{idx + 1} {t}"
             else:
-                return f"#{index + 1}"
+                return f"#{idx + 1} {t}"
 
         display_df = pd.DataFrame()
-        display_df["Rang"] = [rang_badge(i) for i in range(len(df_watch))]
         display_df["Sektor"] = df_watch["Sektor"]
         display_df["ISIN"] = df_watch["ISIN"]
-        display_df["Ticker"] = df_watch["Ticker"]
+
+        # Ticker erhält jetzt das Ranking direkt eingebettet
+        display_df["Ticker"] = [
+            format_ticker_rank(df_watch.iloc[i], i)
+            for i in range(len(df_watch))
+        ]
+
         display_df["Kurs"] = df_watch["Kurs"].map(lambda x: f"{x:.2f} €")
         display_df["RSI"] = df_watch["RSI"].map(lambda x: f"{x:.1f}")
-
-        display_df["GD200"] = df_watch.apply(
-            lambda r: (
-                f"{r['GD200']:.2f} €"
-                f" ({((r['GD200'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
-            ),
-            axis=1,
-        )
 
         display_df["RSI 35 Preis"] = df_watch.apply(
             lambda r: (
                 f"{r['RSI 35 Preis']:.2f} €"
                 f" ({((r['RSI 35 Preis'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
+            ),
+            axis=1,
+        )
+
+        display_df["GD200"] = df_watch.apply(
+            lambda r: (
+                f"{r['GD200']:.2f} €"
+                f" ({((r['GD200'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
             ),
             axis=1,
         )
@@ -457,6 +489,9 @@ with tab2:
         display_df["1W Perf."] = df_watch["1W Perf."].map(
             lambda x: f"{x:+.2f}%"
         )
+        display_df["Dip Score"] = df_watch["Dip Score"].map(
+            lambda x: f"🔥 {x:.1f}"
+        )
         display_df["Zeitstempel"] = df_watch["Zeitstempel"]
 
         def style_watchlist_cells(df):
@@ -464,14 +499,14 @@ with tab2:
             for idx in df.index:
                 row_raw = df_watch.loc[idx]
 
-                # Portfolio-Hintergrund für Standardspalten
+                # Portfolio-Markierung (Lila)
                 if row_raw.get("Ist_Portfolio", False):
                     for col in df.columns:
                         styles.loc[idx, col] = (
                             "background-color: #e8daef; color: #111111;"
                         )
 
-                # 1. GD200 <= Kurs -> Grün, sonst Rot
+                # GD200 Status
                 if row_raw["GD200"] <= row_raw["Kurs"]:
                     styles.loc[idx, "GD200"] = (
                         "background-color: #d4edda; color: #155724;"
@@ -483,7 +518,7 @@ with tab2:
                         " font-weight: bold;"
                     )
 
-                # 2. RSI < 35 -> Grün, sonst Rot
+                # RSI Status
                 if row_raw["RSI"] < 35.0:
                     styles.loc[idx, "RSI"] = (
                         "background-color: #d4edda; color: #155724;"
@@ -495,8 +530,29 @@ with tab2:
                         " font-weight: bold;"
                     )
 
-                # Rang-Spalte hervorheben
-                styles.loc[idx, "Rang"] = "font-weight: bold; text-align: center;"
+                # Ticker Highlighting für Podest-Plätze (#1 Gold, #2 Silber, #3 Bronze)
+                if idx == 0:
+                    styles.loc[idx, "Ticker"] = (
+                        "background-color: #fef9e7; color: #7d6608;"
+                        " font-weight: bold;"
+                    )
+                elif idx == 1:
+                    styles.loc[idx, "Ticker"] = (
+                        "background-color: #f2f3f4; color: #424949;"
+                        " font-weight: bold;"
+                    )
+                elif idx == 2:
+                    styles.loc[idx, "Ticker"] = (
+                        "background-color: #fbeee6; color: #7e5109;"
+                        " font-weight: bold;"
+                    )
+                else:
+                    styles.loc[idx, "Ticker"] = "font-weight: bold;"
+
+                # Dip Score Spalte hervorheben
+                styles.loc[idx, "Dip Score"] = (
+                    "font-weight: bold; text-align: center;"
+                )
 
             return styles
 
