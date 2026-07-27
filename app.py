@@ -41,7 +41,6 @@ def pin_abfrage():
     return True
 
 
-# Bricht die Ausführung ab, solange die PIN nicht stimmt
 if not pin_abfrage():
     st.stop()
 
@@ -157,7 +156,7 @@ def berechne_indikatoren(isin):
     if data is None:
         return None, (kandidaten[0] if kandidaten else "N/A")
 
-    # ⏱️ Präziser Yahoo Intraday-Zeitstempel für diesen spezifischen ETF
+    # Intraday-Zeitstempel
     yahoo_zeit = "k.A."
     try:
         if erfolgreicher_ticker:
@@ -233,7 +232,6 @@ if "letztes_update" in st.session_state:
 
 st.sidebar.header("⚙️ Steuerung")
 
-# Force-Refresh: Leert Cache UND Session State
 if st.sidebar.button("🔄 Daten aktualisieren", use_container_width=True):
     st.cache_data.clear()
     if "kauf_signale" in st.session_state:
@@ -241,7 +239,15 @@ if st.sidebar.button("🔄 Daten aktualisieren", use_container_width=True):
     st.rerun()
 
 etfs = parse_isin_file("isin.txt")
-st.sidebar.info(f"📋 **{len(etfs)} ETFs** in `isin.txt` hinterlegt.")
+
+# Portfolio-ISINs sicherstellen
+portfolio_isins = [p["isin"] for p in PORTFOLIO]
+etfs_isins = {e["isin"] for e in etfs}
+for p in PORTFOLIO:
+    if p["isin"] not in etfs_isins:
+        etfs.append({"sektor": "Portfolio", "isin": p["isin"]})
+
+st.sidebar.info(f"📋 **{len(etfs)} ETFs** werden überwacht.")
 
 # SCANNER LOGIK LADE
 if "kauf_signale" not in st.session_state:
@@ -273,6 +279,11 @@ if "kauf_signale" not in st.session_state:
         )
 
         grundtrend_ok = ema50 > gd200 and gd200_steigt
+        gd200_abstand = ((c - gd200) / gd200) * 100
+
+        is_kauf = grundtrend_ok and (rsi < 35) and (c > gd200) and (not messer)
+        is_watch = rsi < 40 and c >= (gd200 * 0.97)
+        is_in_portfolio = item["isin"] in portfolio_isins
 
         entry = {
             "Sektor": item["sektor"],
@@ -282,16 +293,20 @@ if "kauf_signale" not in st.session_state:
             "RSI": round(rsi, 1),
             "RSI 35 Preis": rsi35,
             "GD200": gd200,
+            "GD200_Abstand": gd200_abstand,
             "EMA50": ema50,
             "1W Perf.": perf_1w,
-            "Zeitstempel": data["yahoo_zeit"],  # 👈 NEU: Yahoo Zeitstempel in der Liste
+            "Zeitstempel": data["yahoo_zeit"],
+            "Ist_Kaufsignal": is_kauf,
+            "Ist_Portfolio": is_in_portfolio,
         }
 
-        if grundtrend_ok:
-            if rsi < 35 and c > gd200 and not messer:
-                kauf_signale.append(entry)
-            elif rsi < 40 and c >= (gd200 * 0.97):
-                watchlist_signale.append(entry)
+        if is_kauf:
+            kauf_signale.append(entry)
+
+        # Kaufsignale & Portfolio-Werte ebenfalls in die Watchlist aufnehmen
+        if is_kauf or is_watch or is_in_portfolio:
+            watchlist_signale.append(entry)
 
     progress_bar.empty()
     st.session_state["kauf_signale"] = kauf_signale
@@ -316,13 +331,23 @@ with tab1:
         for item in kauf:
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Sektor / ETF", item["Sektor"], item["ISIN"])
+                # 👈 Ticker & Sektor in Spalte 1
+                col1.metric(
+                    "Sektor / Ticker",
+                    f"{item['Sektor']} ({item['Ticker']})",
+                    item["ISIN"],
+                )
                 col2.metric(
                     "Aktueller Kurs",
                     f"{item['Kurs']:.2f} €",
                     f"RSI: {item['RSI']} ({item.get('Zeitstempel', 'k.A.')})",
                 )
-                col3.metric("GD200", f"{item['GD200']:.2f} €")
+                # 👈 GD200 mit prozentualem Abstand
+                col3.metric(
+                    "GD200",
+                    f"{item['GD200']:.2f} €",
+                    f"{item['GD200_Abstand']:+.2f}% zum Kurs",
+                )
                 col4.metric(
                     "Kauf-Limit für RSI <35", f"{item['RSI 35 Preis']:.2f} €"
                 )
@@ -333,9 +358,52 @@ with tab1:
 with tab2:
     watch = st.session_state.get("watchlist_signale", [])
     if watch:
+        st.caption(
+            "💡 **Farblegende:** 🟩 **Hellgrün** = Aktives Kaufsignal | 🟪"
+            " **Helllila** = Bereits im Portfolio"
+        )
         df_watch = pd.DataFrame(watch).sort_values(by="RSI", ascending=True)
-        # Die Spalte 'Zeitstempel' steht automatisch an letzter Stelle
-        st.dataframe(df_watch, use_container_width=True)
+
+        show_cols = [
+            "Sektor",
+            "ISIN",
+            "Ticker",
+            "Kurs",
+            "RSI",
+            "RSI 35 Preis",
+            "GD200",
+            "EMA50",
+            "1W Perf.",
+            "Zeitstempel",
+        ]
+        display_df = df_watch[show_cols].copy()
+
+        # FARB-LOGIK FÜR ZEILEN HINTERGRUND
+        def style_watchlist_rows(df):
+            styles = pd.DataFrame("", index=df.index, columns=df.columns)
+            for idx, row in df_watch.iterrows():
+                if row.get("Ist_Portfolio", False):
+                    styles.loc[idx] = (
+                        "background-color: #e8daef; color: #111111;"  # Helllila
+                    )
+                elif row.get("Ist_Kaufsignal", False):
+                    styles.loc[idx] = (
+                        "background-color: #d4edda; color: #111111;"  # Hellgrün
+                    )
+            return styles
+
+        styled_df = display_df.style.apply(
+            style_watchlist_rows, axis=None
+        ).format({
+            "Kurs": "{:.2f} €",
+            "RSI": "{:.1f}",
+            "RSI 35 Preis": "{:.2f} €",
+            "GD200": "{:.2f} €",
+            "EMA50": "{:.2f} €",
+            "1W Perf.": "{:+.2f}%",
+        })
+
+        st.dataframe(styled_df, use_container_width=True)
     else:
         st.write("Keine ETFs in der erweiterten Watchlist.")
 
@@ -349,7 +417,6 @@ with tab3:
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
-            # Indikatoren
             delta = df["Close"].diff()
             gain = (
                 delta.where(delta > 0, 0).ewm(alpha=1 / 14, adjust=False).mean()
@@ -396,7 +463,7 @@ with tab3:
                 )
                 days_held = (today_date - buy_date).days
 
-            # 🎯 DYNAMISCHE VERKAUFS-LOGIK & SIGNAL-STYLING
+            # 🎯 DYNAMISCHE VERKAUFS-LOGIK
             signal_type = "info"
             if not is_partially_sold:
                 if current_price >= ema50_today:
@@ -462,7 +529,6 @@ with tab3:
                         f" {max_rsi_since_t1:.1f})"
                     )
 
-            # POSITION CONTAINER VISUALISIERUNG
             with st.container(border=True):
                 st.markdown(
                     f"### {pos['name']} (`{pos['ticker']}`) — ISIN:"
@@ -493,7 +559,6 @@ with tab3:
                     f"EMA50: {ema50_today:.2f} €",
                 )
 
-                # SIGNAL BOX DISPLAY
                 if signal_type == "success":
                     st.success(signal)
                 elif signal_type == "error":
