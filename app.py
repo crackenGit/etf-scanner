@@ -213,23 +213,31 @@ def berechne_indikatoren(isin):
         perf_1w = ((c_today - close_1w) / close_1w) * 100
 
     # ==========================================
-    # DIP-POTENTIAL-SCORE BERECHNUNG
+    # KORRIGIERTER DIP-POTENTIAL-SCORE
     # ==========================================
-    rsi_factor = max(0, (40 - rsi_today)) * 2.5
-    ema50_upside = (
-        max(0, ((ema50_heute - c_today) / c_today) * 100) * 1.5
-    )  # Potenzial bis EMA50
-    gd200_dist = ((c_today - gd200_heute) / gd200_heute) * 100
+    # 1. RSI-Überverkauftheit (Je tiefer unter 45, desto besser)
+    rsi_score = max(0, (45 - rsi_today)) * 1.5
 
-    # GD200-Nähe-Bonus
-    gd_bonus = 0
-    if 0 <= gd200_dist <= 3.0:
-        gd_bonus = 10  # Optimaler Support-Bereich
-    elif -2.0 <= gd200_dist < 0:
-        gd_bonus = 5
+    # 2. Erholungspotenzial bis EMA50 (Ziel 1)
+    ema50_upside_pct = max(0, ((ema50_heute - c_today) / c_today) * 100)
+    ema50_score = ema50_upside_pct * 2.0
 
-    dip_factor = abs(perf_1w) if perf_1w < 0 else 0
-    dip_score = round(rsi_factor + ema50_upside + gd_bonus + dip_factor, 1)
+    # 3. Nähe zum RSI-35-Trigger (Je knapper der Abstand, desto höher der Lauer-Score)
+    rsi35_dist_abs = abs(rsi35_preis - c_today) / c_today * 100
+    rsi35_proximity_score = max(0, 15 - rsi35_dist_abs) * 1.5
+
+    # 4. GD200 Trend-Sicherheitspuffer (Belohnt echten Puffer im intakten Trend)
+    gd200_buffer_pct = ((c_today - gd200_heute) / gd200_heute) * 100
+    if gd200_buffer_pct > 0:
+        gd200_score = min(
+            25.0, gd200_buffer_pct * 1.2
+        )  # Puffer wird bis max +25 Punkte belohnt
+    else:
+        gd200_score = -20.0  # Bestraft Abwärtstrends unter GD200
+
+    dip_score = round(
+        rsi_score + ema50_score + rsi35_proximity_score + gd200_score, 1
+    )
 
     return {
         "close": c_today,
@@ -453,7 +461,7 @@ with tab2:
         display_df["Sektor"] = df_watch["Sektor"]
         display_df["ISIN"] = df_watch["ISIN"]
 
-        # Ticker erhält jetzt das Ranking direkt eingebettet
+        # Ticker erhält das Ranking direkt eingebettet
         display_df["Ticker"] = [
             format_ticker_rank(df_watch.iloc[i], i)
             for i in range(len(df_watch))
