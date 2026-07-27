@@ -240,7 +240,6 @@ if st.sidebar.button("🔄 Daten aktualisieren", use_container_width=True):
 
 etfs = parse_isin_file("isin.txt")
 
-# Portfolio-ISINs sicherstellen
 portfolio_isins = [p["isin"] for p in PORTFOLIO]
 etfs_isins = {e["isin"] for e in etfs}
 for p in PORTFOLIO:
@@ -279,7 +278,8 @@ if "kauf_signale" not in st.session_state:
         )
 
         grundtrend_ok = ema50 > gd200 and gd200_steigt
-        gd200_abstand = ((c - gd200) / gd200) * 100
+        gd200_abstand = ((gd200 - c) / c) * 100
+        rsi35_abstand = ((rsi35 - c) / c) * 100
 
         is_kauf = grundtrend_ok and (rsi < 35) and (c > gd200) and (not messer)
         is_watch = rsi < 40 and c >= (gd200 * 0.97)
@@ -292,6 +292,7 @@ if "kauf_signale" not in st.session_state:
             "Kurs": c,
             "RSI": round(rsi, 1),
             "RSI 35 Preis": rsi35,
+            "RSI35_Abstand": rsi35_abstand,
             "GD200": gd200,
             "GD200_Abstand": gd200_abstand,
             "EMA50": ema50,
@@ -304,7 +305,6 @@ if "kauf_signale" not in st.session_state:
         if is_kauf:
             kauf_signale.append(entry)
 
-        # Kaufsignale & Portfolio-Werte ebenfalls in die Watchlist aufnehmen
         if is_kauf or is_watch or is_in_portfolio:
             watchlist_signale.append(entry)
 
@@ -331,25 +331,27 @@ with tab1:
         for item in kauf:
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns(4)
-                # 👈 Ticker & Sektor in Spalte 1
-                col1.metric(
-                    "Sektor / Ticker",
-                    f"{item['Sektor']} ({item['Ticker']})",
-                    item["ISIN"],
-                )
+
+                # 👈 UPDATE 1: Sektor oben, Kürzel + ISIN darunter in kleiner
+                col1.markdown(f"**{item['Sektor']}**")
+                col1.caption(f"Ticker: `{item['Ticker']}` | {item['ISIN']}")
+
                 col2.metric(
                     "Aktueller Kurs",
                     f"{item['Kurs']:.2f} €",
                     f"RSI: {item['RSI']} ({item.get('Zeitstempel', 'k.A.')})",
                 )
-                # 👈 GD200 mit prozentualem Abstand
                 col3.metric(
                     "GD200",
                     f"{item['GD200']:.2f} €",
                     f"{item['GD200_Abstand']:+.2f}% zum Kurs",
                 )
+
+                # 👈 UPDATE 2: RSI 35 Kurs auch mit % Abstand zum Kurs
                 col4.metric(
-                    "Kauf-Limit für RSI <35", f"{item['RSI 35 Preis']:.2f} €"
+                    "Kauf-Limit für RSI <35",
+                    f"{item['RSI 35 Preis']:.2f} €",
+                    f"{item['RSI35_Abstand']:+.2f}% zum Kurs",
                 )
     else:
         st.info("Aktuell keine strikten Kaufsignale.")
@@ -364,19 +366,42 @@ with tab2:
         )
         df_watch = pd.DataFrame(watch).sort_values(by="RSI", ascending=True)
 
-        show_cols = [
-            "Sektor",
-            "ISIN",
-            "Ticker",
-            "Kurs",
-            "RSI",
-            "RSI 35 Preis",
-            "GD200",
-            "EMA50",
-            "1W Perf.",
-            "Zeitstempel",
-        ]
-        display_df = df_watch[show_cols].copy()
+        # 👈 UPDATE 4: Neue Reihenfolge (Kurs, RSI, GD200, RSI 35 Preis) & Abstände in Klammern
+        display_df = pd.DataFrame()
+        display_df["Sektor"] = df_watch["Sektor"]
+        display_df["ISIN"] = df_watch["ISIN"]
+        display_df["Ticker"] = df_watch["Ticker"]
+        display_df["Kurs"] = df_watch["Kurs"].map(lambda x: f"{x:.2f} €")
+        display_df["RSI"] = df_watch["RSI"].map(lambda x: f"{x:.1f}")
+
+        display_df["GD200"] = df_watch.apply(
+            lambda r: (
+                f"{r['GD200']:.2f} €"
+                f" ({((r['GD200'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
+            ),
+            axis=1,
+        )
+
+        display_df["RSI 35 Preis"] = df_watch.apply(
+            lambda r: (
+                f"{r['RSI 35 Preis']:.2f} €"
+                f" ({((r['RSI 35 Preis'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
+            ),
+            axis=1,
+        )
+
+        display_df["EMA50"] = df_watch.apply(
+            lambda r: (
+                f"{r['EMA50']:.2f} €"
+                f" ({((r['EMA50'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
+            ),
+            axis=1,
+        )
+
+        display_df["1W Perf."] = df_watch["1W Perf."].map(
+            lambda x: f"{x:+.2f}%"
+        )
+        display_df["Zeitstempel"] = df_watch["Zeitstempel"]
 
         # FARB-LOGIK FÜR ZEILEN HINTERGRUND
         def style_watchlist_rows(df):
@@ -392,18 +417,10 @@ with tab2:
                     )
             return styles
 
-        styled_df = display_df.style.apply(
-            style_watchlist_rows, axis=None
-        ).format({
-            "Kurs": "{:.2f} €",
-            "RSI": "{:.1f}",
-            "RSI 35 Preis": "{:.2f} €",
-            "GD200": "{:.2f} €",
-            "EMA50": "{:.2f} €",
-            "1W Perf.": "{:+.2f}%",
-        })
+        styled_df = display_df.style.apply(style_watchlist_rows, axis=None)
 
-        st.dataframe(styled_df, use_container_width=True)
+        # 👈 UPDATE 3: hide_index=True entfernt die Zahlenwerte (0-19)
+        st.dataframe(styled_df, use_container_width=True, hide_index=True)
     else:
         st.write("Keine ETFs in der erweiterten Watchlist.")
 
