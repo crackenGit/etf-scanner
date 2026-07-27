@@ -405,9 +405,9 @@ with tab2:
     watch = st.session_state.get("watchlist_signale", [])
     if watch:
         st.caption(
-            "💡 **Farblegende:** 🥇/🥈/🥉 **Ranking in Ticker-Spalte** | 🟩"
-            " **Grün** = Bedingung erfüllt | 🟥 **Rot** = Nicht erfüllt | 🟪"
-            " **Lila** = Im Portfolio"
+            "💡 **Farblegende:** 🥇/🥈/🥉 **Top Dip-Scores (Auszug)** | 🟩 **Grün**"
+            " = Bedingung erfüllt | 🟥 **Rot** = Nicht erfüllt | 🟪 **Lila** ="
+            " Im Portfolio"
         )
 
         col_sort1, col_sort2 = st.columns([2, 2])
@@ -426,7 +426,21 @@ with tab2:
 
         df_watch = pd.DataFrame(watch)
 
-        # 1. Sortierung basierend auf Benutzerauswahl
+        # 1. DEDUPLIZIERUNG & BESTIMMUNG DER DIP-SCORE RÄNGE
+        # Erst nach Dip Score absteigend sortieren, damit der beste Ticker pro ISIN/Stamm behalten wird
+        df_watch = df_watch.sort_values(by="Dip Score", ascending=False)
+        df_watch["Ticker_Base"] = df_watch["Ticker"].apply(
+            lambda x: str(x).split(".")[0] if x else ""
+        )
+        df_watch = df_watch.drop_duplicates(subset=["ISIN"], keep="first")
+        df_watch = df_watch.drop_duplicates(
+            subset=["Ticker_Base"], keep="first"
+        )
+
+        # Dip-Score Rang zuweisen (1 = Höchster Dip Score, 2 = Zweithöchster, etc.)
+        df_watch["Dip_Rank"] = range(1, len(df_watch) + 1)
+
+        # 2. TABELLEN-SORTIERUNG (Standard: Kleinstes RSI zuerst)
         if sort_kriterium == "🔥 RSI (Niedrigster zuerst)":
             df_watch = df_watch.sort_values(by="RSI", ascending=True)
         elif sort_kriterium == "🚀 Dip-Potential Score":
@@ -440,37 +454,26 @@ with tab2:
         elif sort_kriterium == "📉 Stärkster 1W-Rücksetzer":
             df_watch = df_watch.sort_values(by="1W Perf.", ascending=True)
 
-        # 2. DEDUPLIZIERUNG: Bei gleicher ISIN oder identischem Ticker-Stamm (z.B. SEMI.AS vs SEMI.L) nur den besten behalten
-        df_watch["Ticker_Base"] = df_watch["Ticker"].apply(
-            lambda x: str(x).split(".")[0] if x else ""
-        )
-        df_watch = df_watch.drop_duplicates(subset=["ISIN"], keep="first")
-        df_watch = df_watch.drop_duplicates(
-            subset=["Ticker_Base"], keep="first"
-        )
-
         df_watch = df_watch.reset_index(drop=True)
 
-        # 3. Ticker-Spalte dynamisch mit Rängen & Medaillen anreichern
-        def format_ticker_rank(row, idx):
+        # 3. Ticker-Spalte formatieren (Medaillen BLASE NUR für Top-3 DIP SCORES)
+        def format_ticker_rank(row):
             t = row["Ticker"]
-            if idx == 0:
-                return f"🥇 #{idx + 1} {t}"
-            elif idx == 1:
-                return f"🥈 #{idx + 1} {t}"
-            elif idx == 2:
-                return f"🥉 #{idx + 1} {t}"
+            rank = row["Dip_Rank"]
+            if rank == 1:
+                return f"🥇 {t}"
+            elif rank == 2:
+                return f"🥈 {t}"
+            elif rank == 3:
+                return f"🥉 {t}"
             else:
-                return f"#{idx + 1} {t}"
+                return t
 
         display_df = pd.DataFrame()
         display_df["Sektor"] = df_watch["Sektor"]
         display_df["ISIN"] = df_watch["ISIN"]
-
-        # Ranking direkt in die Ticker-Spalte einbetten
         display_df["Ticker"] = [
-            format_ticker_rank(df_watch.iloc[i], i)
-            for i in range(len(df_watch))
+            format_ticker_rank(df_watch.iloc[i]) for i in range(len(df_watch))
         ]
 
         display_df["Kurs"] = df_watch["Kurs"].map(lambda x: f"{x:.2f} €")
@@ -544,18 +547,19 @@ with tab2:
                         " font-weight: bold;"
                     )
 
-                # Ticker Highlighting für Podest-Plätze (#1 Gold, #2 Silber, #3 Bronze)
-                if idx == 0:
+                # Ticker Highlighting basierend auf DIP SCORE RANG (1. Gold, 2. Silber, 3. Bronze)
+                dip_rank = row_raw.get("Dip_Rank", 999)
+                if dip_rank == 1:
                     styles.loc[idx, "Ticker"] = (
                         "background-color: #fef9e7; color: #7d6608;"
                         " font-weight: bold;"
                     )
-                elif idx == 1:
+                elif dip_rank == 2:
                     styles.loc[idx, "Ticker"] = (
                         "background-color: #f2f3f4; color: #424949;"
                         " font-weight: bold;"
                     )
-                elif idx == 2:
+                elif dip_rank == 3:
                     styles.loc[idx, "Ticker"] = (
                         "background-color: #fbeee6; color: #7e5109;"
                         " font-weight: bold;"
