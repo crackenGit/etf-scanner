@@ -14,6 +14,36 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ==========================================
+# PIN-SCHUTZ / PASSWORT
+# ==========================================
+DEINE_PIN = "1337"  # 👈 Ändere hier deine persönliche PIN
+
+def pin_abfrage():
+    if "pin_ok" not in st.session_state:
+        st.session_state["pin_ok"] = False
+
+    if not st.session_state["pin_ok"]:
+        st.title("🔒 Zugriff geschützt")
+        eingabe = st.text_input(
+            "Bitte PIN eingeben:", type="password", key="pin_eingabe"
+        )
+
+        if st.button("Anmelden", use_container_width=True):
+            if eingabe == DEINE_PIN:
+                st.session_state["pin_ok"] = True
+                st.rerun()
+            else:
+                st.error("❌ Falsche PIN!")
+
+        return False
+    return True
+
+
+# Bricht die Ausführung ab, solange die PIN nicht stimmt
+if not pin_abfrage():
+    st.stop()
+
 warnings.filterwarnings("ignore")
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
