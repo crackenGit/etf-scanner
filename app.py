@@ -157,17 +157,24 @@ def berechne_indikatoren(isin):
     if data is None:
         return None, (kandidaten[0] if kandidaten else "N/A")
 
-    # Yahoo Intraday-Zeitstempel abrufen
+    # ⏱️ Präziser Yahoo Intraday-Zeitstempel für diesen spezifischen ETF
     yahoo_zeit = "k.A."
     try:
         if erfolgreicher_ticker:
             t_obj = yf.Ticker(erfolgreicher_ticker)
-            intraday = t_obj.history(period="1d", interval="1m")
-            if not intraday.empty:
-                last_ts = intraday.index[-1]
-                if last_ts.tzinfo is not None:
-                    last_ts = last_ts.tz_convert("Europe/Berlin")
-                yahoo_zeit = last_ts.strftime("%H:%M Uhr (%d.%m.)")
+            fi = getattr(t_obj, "fast_info", None)
+            if fi and getattr(fi, "last_trade_time", None):
+                ts = pd.to_datetime(
+                    fi.last_trade_time, unit="s", utc=True
+                ).tz_convert("Europe/Berlin")
+                yahoo_zeit = ts.strftime("%H:%M Uhr (%d.%m.)")
+            else:
+                intraday = t_obj.history(period="1d", interval="1m")
+                if not intraday.empty:
+                    last_ts = intraday.index[-1]
+                    if last_ts.tzinfo is not None:
+                        last_ts = last_ts.tz_convert("Europe/Berlin")
+                    yahoo_zeit = last_ts.strftime("%H:%M Uhr (%d.%m.)")
     except Exception:
         pass
 
@@ -219,7 +226,10 @@ def berechne_indikatoren(isin):
 st.title("📈 ETF Dip-Scanner & Portfolio-Manager")
 
 if "letztes_update" in st.session_state:
-    st.caption(f"⏱️ **Letzter Datenstand:** {st.session_state['letztes_update']}")
+    st.caption(
+        f"⏱️ **Letzter allgemeiner Scan-Stand:**"
+        f" {st.session_state['letztes_update']}"
+    )
 
 st.sidebar.header("⚙️ Steuerung")
 
@@ -274,6 +284,7 @@ if "kauf_signale" not in st.session_state:
             "GD200": gd200,
             "EMA50": ema50,
             "1W Perf.": perf_1w,
+            "Zeitstempel": data["yahoo_zeit"],  # 👈 NEU: Yahoo Zeitstempel in der Liste
         }
 
         if grundtrend_ok:
@@ -309,7 +320,7 @@ with tab1:
                 col2.metric(
                     "Aktueller Kurs",
                     f"{item['Kurs']:.2f} €",
-                    f"RSI: {item['RSI']}",
+                    f"RSI: {item['RSI']} ({item.get('Zeitstempel', 'k.A.')})",
                 )
                 col3.metric("GD200", f"{item['GD200']:.2f} €")
                 col4.metric(
@@ -323,6 +334,7 @@ with tab2:
     watch = st.session_state.get("watchlist_signale", [])
     if watch:
         df_watch = pd.DataFrame(watch).sort_values(by="RSI", ascending=True)
+        # Die Spalte 'Zeitstempel' steht automatisch an letzter Stelle
         st.dataframe(df_watch, use_container_width=True)
     else:
         st.write("Keine ETFs in der erweiterten Watchlist.")
