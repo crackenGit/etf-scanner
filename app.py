@@ -71,7 +71,7 @@ MANUAL_TICKERS = {
     "IE00BCHWNV48": ["XIND.MI", "XIND.L", "XCHA.DE", "XINW.DE"],
     "IE00BLCHJB90": ["WCLD.L", "WCLD.DE"],
     "IE000E7EI9P0": ["SEMI.L", "SEMI.DE"],
-    "IE00BJ5JNZ06": ["WTAI.L", "WTAI.DE"],
+    "IE00BJ5JNZ06": ["WTAI.L", "WTAI.DE", "WTAI.MI"],
     "IE00BLPK3577": ["CYBR.L", "ISPY.DE"],
     "IE00B3Q19T94": ["IUFS.L", "S5FP.DE"],
     "IE00B5MTWD60": ["WIFI.L", "QDVE.DE"],
@@ -188,12 +188,20 @@ def berechne_indikatoren(isin):
     avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
     rsi = 100 - (100 / (1 + (avg_gain / avg_loss)))
 
-    avg_gain_prev, avg_loss_prev, prev_close = (
-        float(avg_gain.iloc[-2]),
-        float(avg_loss.iloc[-2]),
-        float(close.iloc[-2]),
-    )
-    rsi35_preis = prev_close + ((7 * avg_loss_prev) - (13 * avg_gain_prev))
+    # --- KORRIGIERTE MATH.-LOGIK FÜR ZIELKURS RSI 35 ---
+    ag_today = float(avg_gain.iloc[-1])
+    al_today = float(avg_loss.iloc[-1])
+    c_today = float(close.iloc[-1])
+    rsi_today = float(rsi.iloc[-1])
+
+    if rsi_today > 35.0:
+        # Kurs muss FALLEN, um auf RSI 35 zu kommen
+        drop_needed = (169.0 * ag_today - 91.0 * al_today) / 7.0
+        rsi35_preis = c_today - drop_needed
+    else:
+        # Kurs muss STEIGEN, um auf RSI 35 zu kommen
+        rise_needed = (91.0 * al_today - 169.0 * ag_today) / 13.0
+        rsi35_preis = c_today + rise_needed
 
     gd200_heute = float(gd200.iloc[-1])
     gd200_vor_10d = (
@@ -204,11 +212,11 @@ def berechne_indikatoren(isin):
     perf_1w = 0.0
     if len(close) >= 6:
         close_1w = float(close.iloc[-6])
-        perf_1w = ((float(close.iloc[-1]) - close_1w) / close_1w) * 100
+        perf_1w = ((c_today - close_1w) / close_1w) * 100
 
     return {
-        "close": float(close.iloc[-1]),
-        "rsi": float(rsi.iloc[-1]),
+        "close": c_today,
+        "rsi": rsi_today,
         "rsi35_preis": float(rsi35_preis),
         "gd200": gd200_heute,
         "ema50": float(ema50.iloc[-1]),
@@ -332,7 +340,6 @@ with tab1:
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns(4)
 
-                # 👈 UPDATE 1: Sektor oben, Kürzel + ISIN darunter in kleiner
                 col1.markdown(f"**{item['Sektor']}**")
                 col1.caption(f"Ticker: `{item['Ticker']}` | {item['ISIN']}")
 
@@ -346,8 +353,6 @@ with tab1:
                     f"{item['GD200']:.2f} €",
                     f"{item['GD200_Abstand']:+.2f}% zum Kurs",
                 )
-
-                # 👈 UPDATE 2: RSI 35 Kurs auch mit % Abstand zum Kurs
                 col4.metric(
                     "Kauf-Limit für RSI <35",
                     f"{item['RSI 35 Preis']:.2f} €",
@@ -366,7 +371,6 @@ with tab2:
         )
         df_watch = pd.DataFrame(watch).sort_values(by="RSI", ascending=True)
 
-        # 👈 UPDATE 4: Neue Reihenfolge (Kurs, RSI, GD200, RSI 35 Preis) & Abstände in Klammern
         display_df = pd.DataFrame()
         display_df["Sektor"] = df_watch["Sektor"]
         display_df["ISIN"] = df_watch["ISIN"]
@@ -403,23 +407,20 @@ with tab2:
         )
         display_df["Zeitstempel"] = df_watch["Zeitstempel"]
 
-        # FARB-LOGIK FÜR ZEILEN HINTERGRUND
         def style_watchlist_rows(df):
             styles = pd.DataFrame("", index=df.index, columns=df.columns)
             for idx, row in df_watch.iterrows():
                 if row.get("Ist_Portfolio", False):
                     styles.loc[idx] = (
-                        "background-color: #e8daef; color: #111111;"  # Helllila
+                        "background-color: #e8daef; color: #111111;"
                     )
                 elif row.get("Ist_Kaufsignal", False):
                     styles.loc[idx] = (
-                        "background-color: #d4edda; color: #111111;"  # Hellgrün
+                        "background-color: #d4edda; color: #111111;"
                     )
             return styles
 
         styled_df = display_df.style.apply(style_watchlist_rows, axis=None)
-
-        # 👈 UPDATE 3: hide_index=True entfernt die Zahlenwerte (0-19)
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
     else:
         st.write("Keine ETFs in der erweiterten Watchlist.")
@@ -480,7 +481,6 @@ with tab3:
                 )
                 days_held = (today_date - buy_date).days
 
-            # 🎯 DYNAMISCHE VERKAUFS-LOGIK
             signal_type = "info"
             if not is_partially_sold:
                 if current_price >= ema50_today:
