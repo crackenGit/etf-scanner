@@ -188,18 +188,16 @@ def berechne_indikatoren(isin):
     avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
     rsi = 100 - (100 / (1 + (avg_gain / avg_loss)))
 
-    # --- KORRIGIERTE MATH.-LOGIK FÜR ZIELKURS RSI 35 ---
+    # --- MATH.-LOGIK FÜR ZIELKURS RSI 35 ---
     ag_today = float(avg_gain.iloc[-1])
     al_today = float(avg_loss.iloc[-1])
     c_today = float(close.iloc[-1])
     rsi_today = float(rsi.iloc[-1])
 
     if rsi_today > 35.0:
-        # Kurs muss FALLEN, um auf RSI 35 zu kommen
         drop_needed = (169.0 * ag_today - 91.0 * al_today) / 7.0
         rsi35_preis = c_today - drop_needed
     else:
-        # Kurs muss STEIGEN, um auf RSI 35 zu kommen
         rise_needed = (91.0 * al_today - 169.0 * ag_today) / 13.0
         rsi35_preis = c_today + rise_needed
 
@@ -337,22 +335,40 @@ with tab1:
             " kein fallendes Messer)"
         )
         for item in kauf:
+            rsi_bg = "#d4edda" if item["RSI"] < 35 else "#f8d7da"
+            rsi_fg = "#155724" if item["RSI"] < 35 else "#721c24"
+
+            gd_bg = "#d4edda" if item["GD200"] <= item["Kurs"] else "#f8d7da"
+            gd_fg = "#155724" if item["GD200"] <= item["Kurs"] else "#721c24"
+
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns(4)
 
                 col1.markdown(f"**{item['Sektor']}**")
                 col1.caption(f"Ticker: `{item['Ticker']}` | {item['ISIN']}")
 
-                col2.metric(
-                    "Aktueller Kurs",
-                    f"{item['Kurs']:.2f} €",
-                    f"RSI: {item['RSI']} ({item.get('Zeitstempel', 'k.A.')})",
+                col2.markdown(
+                    f"""
+                    <div style="background-color: {rsi_bg}; color: {rsi_fg}; padding: 8px 12px; border-radius: 6px; text-align: center;">
+                        <div style="font-size: 0.75em; font-weight: bold; text-transform: uppercase;">Aktueller Kurs / RSI</div>
+                        <div style="font-size: 1.15em; font-weight: bold;">{item['Kurs']:.2f} €</div>
+                        <div style="font-size: 0.85em;">RSI: <b>{item['RSI']}</b> ({item.get('Zeitstempel', 'k.A.')})</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
                 )
-                col3.metric(
-                    "GD200",
-                    f"{item['GD200']:.2f} €",
-                    f"{item['GD200_Abstand']:+.2f}% zum Kurs",
+
+                col3.markdown(
+                    f"""
+                    <div style="background-color: {gd_bg}; color: {gd_fg}; padding: 8px 12px; border-radius: 6px; text-align: center;">
+                        <div style="font-size: 0.75em; font-weight: bold; text-transform: uppercase;">GD200</div>
+                        <div style="font-size: 1.15em; font-weight: bold;">{item['GD200']:.2f} €</div>
+                        <div style="font-size: 0.85em;">{item['GD200_Abstand']:+.2f}% zum Kurs</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
                 )
+
                 col4.metric(
                     "Kauf-Limit für RSI <35",
                     f"{item['RSI 35 Preis']:.2f} €",
@@ -366,8 +382,9 @@ with tab2:
     watch = st.session_state.get("watchlist_signale", [])
     if watch:
         st.caption(
-            "💡 **Farblegende:** 🟩 **Hellgrün** = Aktives Kaufsignal | 🟪"
-            " **Helllila** = Bereits im Portfolio"
+            "💡 **Farblegende:** 🟩 **Grün** = Bedingung erfüllt (RSI < 35"
+            " bzw. GD200 ≤ Kurs) | 🟥 **Rot** = Nicht erfüllt | 🟪 **Lila** = Im"
+            " Portfolio"
         )
         df_watch = pd.DataFrame(watch).sort_values(by="RSI", ascending=True)
 
@@ -407,20 +424,45 @@ with tab2:
         )
         display_df["Zeitstempel"] = df_watch["Zeitstempel"]
 
-        def style_watchlist_rows(df):
+        def style_watchlist_cells(df):
             styles = pd.DataFrame("", index=df.index, columns=df.columns)
-            for idx, row in df_watch.iterrows():
-                if row.get("Ist_Portfolio", False):
-                    styles.loc[idx] = (
-                        "background-color: #e8daef; color: #111111;"
+            for idx in df.index:
+                row_raw = df_watch.loc[idx]
+
+                # Portfolio-Hintergrund für Standardspalten
+                if row_raw.get("Ist_Portfolio", False):
+                    for col in df.columns:
+                        styles.loc[idx, col] = (
+                            "background-color: #e8daef; color: #111111;"
+                        )
+
+                # 1. GD200 <= Kurs -> Grün, sonst Rot
+                if row_raw["GD200"] <= row_raw["Kurs"]:
+                    styles.loc[idx, "GD200"] = (
+                        "background-color: #d4edda; color: #155724;"
+                        " font-weight: bold;"
                     )
-                elif row.get("Ist_Kaufsignal", False):
-                    styles.loc[idx] = (
-                        "background-color: #d4edda; color: #111111;"
+                else:
+                    styles.loc[idx, "GD200"] = (
+                        "background-color: #f8d7da; color: #721c24;"
+                        " font-weight: bold;"
                     )
+
+                # 2. RSI < 35 -> Grün, sonst Rot
+                if row_raw["RSI"] < 35.0:
+                    styles.loc[idx, "RSI"] = (
+                        "background-color: #d4edda; color: #155724;"
+                        " font-weight: bold;"
+                    )
+                else:
+                    styles.loc[idx, "RSI"] = (
+                        "background-color: #f8d7da; color: #721c24;"
+                        " font-weight: bold;"
+                    )
+
             return styles
 
-        styled_df = display_df.style.apply(style_watchlist_rows, axis=None)
+        styled_df = display_df.style.apply(style_watchlist_cells, axis=None)
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
     else:
         st.write("Keine ETFs in der erweiterten Watchlist.")
