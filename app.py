@@ -377,7 +377,7 @@ with tab1:
     else:
         st.info("Aktuell keine strikten Kaufsignale.")
 
-# --- TAB 2: WATCHLIST ---
+# --- TAB 2: WATCHLIST MIT RANKING ---
 with tab2:
     watch = st.session_state.get("watchlist_signale", [])
     if watch:
@@ -386,9 +386,44 @@ with tab2:
             " bzw. GD200 ≤ Kurs) | 🟥 **Rot** = Nicht erfüllt | 🟪 **Lila** = Im"
             " Portfolio"
         )
-        df_watch = pd.DataFrame(watch).sort_values(by="RSI", ascending=True)
+        
+        # --- RANKING & SORTIERUNGS-STEUERUNG ---
+        col_sort1, col_sort2 = st.columns([2, 2])
+        with col_sort1:
+            sort_kriterium = st.selectbox("🏆 Watchlist Ranking nach:", [
+                "🔥 RSI (Niedrigster zuerst)",
+                "🎯 Abstand zu RSI 35 Zielkurs",
+                "📊 Nähe zu GD200-Unterstützung",
+                "📉 Stärkster 1W-Rücksetzer"
+            ])
+
+        df_watch = pd.DataFrame(watch)
+
+        # Sortierung basierend auf Nutzerwahl
+        if sort_kriterium == "🔥 RSI (Niedrigster zuerst)":
+            df_watch = df_watch.sort_values(by="RSI", ascending=True)
+        elif sort_kriterium == "🎯 Abstand zu RSI 35 Zielkurs":
+            df_watch = df_watch.sort_values(by="RSI35_Abstand", ascending=False)
+        elif sort_kriterium == "📊 Nähe zu GD200-Unterstützung":
+            df_watch = df_watch.sort_values(by="GD200_Abstand", ascending=True)
+        elif sort_kriterium == "📉 Stärkster 1W-Rücksetzer":
+            df_watch = df_watch.sort_values(by="1W Perf.", ascending=True)
+
+        df_watch = df_watch.reset_index(drop=True)
+
+        # Ränge hinzufügen (Rang 1, 2, 3 mit Medaillen-Badges)
+        def rang_badge(index):
+            if index == 0:
+                return "🥇 #1"
+            elif index == 1:
+                return "🥈 #2"
+            elif index == 2:
+                return "🥉 #3"
+            else:
+                return f"#{index + 1}"
 
         display_df = pd.DataFrame()
+        display_df["Rang"] = [rang_badge(i) for i in range(len(df_watch))]
         display_df["Sektor"] = df_watch["Sektor"]
         display_df["ISIN"] = df_watch["ISIN"]
         display_df["Ticker"] = df_watch["Ticker"]
@@ -459,6 +494,9 @@ with tab2:
                         "background-color: #f8d7da; color: #721c24;"
                         " font-weight: bold;"
                     )
+
+                # Rang-Spalte hervorheben
+                styles.loc[idx, "Rang"] = "font-weight: bold; text-align: center;"
 
             return styles
 
