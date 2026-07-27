@@ -17,7 +17,8 @@ st.set_page_config(
 # ==========================================
 # PIN-SCHUTZ / PASSWORT
 # ==========================================
-DEINE_PIN = "1337"  # 👈 Ändere hier deine persönliche PIN
+DEINE_PIN = "1337"  # 👈 Deine persönliche PIN
+
 
 def pin_abfrage():
     if "pin_ok" not in st.session_state:
@@ -156,6 +157,20 @@ def berechne_indikatoren(isin):
     if data is None:
         return None, (kandidaten[0] if kandidaten else "N/A")
 
+    # Yahoo Intraday-Zeitstempel abrufen
+    yahoo_zeit = "k.A."
+    try:
+        if erfolgreicher_ticker:
+            t_obj = yf.Ticker(erfolgreicher_ticker)
+            intraday = t_obj.history(period="1d", interval="1m")
+            if not intraday.empty:
+                last_ts = intraday.index[-1]
+                if last_ts.tzinfo is not None:
+                    last_ts = last_ts.tz_convert("Europe/Berlin")
+                yahoo_zeit = last_ts.strftime("%H:%M Uhr (%d.%m.)")
+    except Exception:
+        pass
+
     close = data["Close"].dropna()
     gd200 = close.rolling(window=200).mean()
     ema50 = close.ewm(span=50, adjust=False).mean()
@@ -194,6 +209,7 @@ def berechne_indikatoren(isin):
         "gd200_steigt": gd200_steigt,
         "perf_1w": perf_1w,
         "is_fallendes_messer": perf_1w < -3.0,
+        "yahoo_zeit": yahoo_zeit,
     }, erfolgreicher_ticker
 
 
@@ -201,6 +217,9 @@ def berechne_indikatoren(isin):
 # 3. APP USER INTERFACE
 # ==========================================
 st.title("📈 ETF Dip-Scanner & Portfolio-Manager")
+
+if "letztes_update" in st.session_state:
+    st.caption(f"⏱️ **Letzter Datenstand:** {st.session_state['letztes_update']}")
 
 st.sidebar.header("⚙️ Steuerung")
 if st.sidebar.button("🔄 Daten aktualisieren", use_container_width=True):
@@ -212,6 +231,7 @@ st.sidebar.info(f"📋 **{len(etfs)} ETFs** in `isin.txt` hinterlegt.")
 # SCANNER LOGIK LADE
 if "kauf_signale" not in st.session_state:
     kauf_signale, watchlist_signale = [], []
+    letzter_zeitstempel = "k.A."
     progress_bar = st.progress(0, text="Lade Kursdaten für Scanner...")
 
     for i, item in enumerate(etfs, 1):
@@ -222,6 +242,9 @@ if "kauf_signale" not in st.session_state:
 
         if not data:
             continue
+
+        if data.get("yahoo_zeit") and data["yahoo_zeit"] != "k.A.":
+            letzter_zeitstempel = data["yahoo_zeit"]
 
         c, rsi, rsi35, gd200, ema50, gd200_steigt, perf_1w, messer = (
             data["close"],
@@ -257,6 +280,7 @@ if "kauf_signale" not in st.session_state:
     progress_bar.empty()
     st.session_state["kauf_signale"] = kauf_signale
     st.session_state["watchlist_signale"] = watchlist_signale
+    st.session_state["letztes_update"] = letzter_zeitstempel
 
 # TABS REGISTER
 tab1, tab2, tab3 = st.tabs([
