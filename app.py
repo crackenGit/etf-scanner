@@ -1,5 +1,5 @@
-import logging
 from datetime import datetime
+import logging
 import warnings
 import pandas as pd
 import requests
@@ -222,8 +222,13 @@ if "letztes_update" in st.session_state:
     st.caption(f"⏱️ **Letzter Datenstand:** {st.session_state['letztes_update']}")
 
 st.sidebar.header("⚙️ Steuerung")
+
+# Force-Refresh: Leert Cache UND Session State
 if st.sidebar.button("🔄 Daten aktualisieren", use_container_width=True):
     st.cache_data.clear()
+    if "kauf_signale" in st.session_state:
+        del st.session_state["kauf_signale"]
+    st.rerun()
 
 etfs = parse_isin_file("isin.txt")
 st.sidebar.info(f"📋 **{len(etfs)} ETFs** in `isin.txt` hinterlegt.")
@@ -317,7 +322,6 @@ with tab1:
 with tab2:
     watch = st.session_state.get("watchlist_signale", [])
     if watch:
-        # Erstellt den DataFrame und sortiert direkt nach RSI (aufsteigend)
         df_watch = pd.DataFrame(watch).sort_values(by="RSI", ascending=True)
         st.dataframe(df_watch, use_container_width=True)
     else:
@@ -381,7 +385,7 @@ with tab3:
                 days_held = (today_date - buy_date).days
 
             # 🎯 DYNAMISCHE VERKAUFS-LOGIK & SIGNAL-STYLING
-            signal_type = "info"  # default
+            signal_type = "info"
             if not is_partially_sold:
                 if current_price >= ema50_today:
                     signal_type = "success"
