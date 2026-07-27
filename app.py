@@ -293,7 +293,9 @@ with tab1:
 with tab2:
     watch = st.session_state.get("watchlist_signale", [])
     if watch:
-        st.dataframe(pd.DataFrame(watch), use_container_width=True)
+        # Erstellt den DataFrame und sortiert direkt nach RSI (aufsteigend)
+        df_watch = pd.DataFrame(watch).sort_values(by="RSI", ascending=True)
+        st.dataframe(df_watch, use_container_width=True)
     else:
         st.write("Keine ETFs in der erweiterten Watchlist.")
 
