@@ -215,7 +215,7 @@ def berechne_indikatoren(isin):
         perf_1w = ((c_today - close_1w) / close_1w) * 100
 
     # ==========================================
-    # NEU: INTELLIGENTE TURNAROUND-LOGIK
+    # INTELLIGENTE TURNAROUND-LOGIK (+0.5% für Sektor-ETFs)
     # ==========================================
     rsi_heute = rsi_today
     rsi_gestern = float(rsi.iloc[-2]) if len(rsi) >= 2 else rsi_heute
@@ -255,6 +255,7 @@ def berechne_indikatoren(isin):
         "rsi": rsi_today,
         "rsi35_preis": float(rsi35_preis),
         "gd200": gd200_heute,
+        "gd200_vor_10d": gd200_vor_10d,
         "ema50": ema50_heute,
         "gd200_steigt": gd200_steigt,
         "perf_1w": perf_1w,
@@ -269,16 +270,16 @@ def berechne_indikatoren(isin):
 # ==========================================
 st.title("📈 ETF Dip-Scanner & Portfolio-Manager")
 
-# --- NEU: ERKLÄRUNG DER TURNAROUND-LOGIK IN DER UI ---
+# --- ERKLÄRUNG DER TURNAROUND-LOGIK IN DER UI ---
 with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     st.markdown("""
-    ### 🔄 Kriterien
-    1. Ein ETF muss unter **RSI < 35** liegen
-    2. Der Kurs muss **über** dem **SMA200** liegen
-    3. Intakter Grundtrend: 
-        * **EMA50** liegt **über** dem **SMA200**
-        * **SMA200** > **SMA200 vor 10 Tagen**
-    4. Turnaround Logik:
+    ### 🔄 Kriterien für ein Kaufsignal
+    1. **RSI < 35:** Der Sektor-ETF ist kurzfristig überverkauft.
+    2. **Kurs > GD200:** Der ETF notiert über seiner langfristigen 200-Tage-Linie.
+    3. **Intakter Grundtrend:** 
+        * **EMA50 > GD200:** Mittelfristiger Trend liegt über dem Langfristtrend.
+        * **GD200 steigt an:** GD200 heute ist höher als der GD200 vor 10 Handelstagen.
+    4. **Turnaround-Logik bestätigt:** Kein fallendes Messer!
     
     ### 🔄 Turnaround-Logik (Erholung vor dem Kauf)
     Ein ETF mit **RSI < 35** ist erst dann ein **echtes Kaufsignal**, wenn der Verkaufsdruck nachlässt und Käufer in den Markt zurückkehren.
@@ -287,7 +288,6 @@ with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     
     1. **Intraday-Turnaround (Einstieg am selben Tag):**
        * Der RSI liegt aktuell **unter 35** **UND** der Kurs hat sich um mindestens **+0,5 % vom heutigen Tagestief erholt**.
-       * Ideal für deinen Check zwischen 16:00 und 17:00 Uhr vor Xetra-Schluss!
     
     2. **Vortags-Turnaround (Klassischer V-Haken):**
        * Der RSI lag **gestern bereits unter 35** **UND** der RSI ist heute höher als gestern (`RSI_heute > RSI_gestern`).
@@ -337,11 +337,12 @@ if "kauf_signale" not in st.session_state:
         if data.get("yahoo_zeit") and data["yahoo_zeit"] != "k.A.":
             letzter_zeitstempel = data["yahoo_zeit"]
 
-        c, rsi, rsi35, gd200, ema50, gd200_steigt, perf_1w, score, messer = (
+        c, rsi, rsi35, gd200, gd200_10d, ema50, gd200_steigt, perf_1w, score, messer = (
             data["close"],
             data["rsi"],
             data["rsi35_preis"],
             data["gd200"],
+            data["gd200_vor_10d"],
             data["ema50"],
             data["gd200_steigt"],
             data["perf_1w"],
@@ -351,6 +352,7 @@ if "kauf_signale" not in st.session_state:
 
         grundtrend_ok = ema50 > gd200 and gd200_steigt
         gd200_abstand = ((gd200 - c) / c) * 100
+        gd200_10d_abstand = ((gd200_10d - c) / c) * 100
         rsi35_abstand = ((rsi35 - c) / c) * 100
 
         is_kauf = grundtrend_ok and (rsi < 35) and (c > gd200) and (not messer)
@@ -367,6 +369,9 @@ if "kauf_signale" not in st.session_state:
             "RSI35_Abstand": rsi35_abstand,
             "GD200": gd200,
             "GD200_Abstand": gd200_abstand,
+            "GD200_10d": gd200_10d,
+            "GD200_10d_Abstand": gd200_10d_abstand,
+            "GD200_steigt": gd200_steigt,
             "EMA50": ema50,
             "1W Perf.": perf_1w,
             "Dip Score": score,
@@ -449,9 +454,9 @@ with tab2:
     watch = st.session_state.get("watchlist_signale", [])
     if watch:
         st.caption(
-            "💡 **Farblegende:** 🥇/🥈/🥉 **Top Dip-Scores (Auszug)** | 🟩 **Grün**"
-            " = Bedingung erfüllt | 🟥 **Rot** = Nicht erfüllt | 🟪 **Lila** ="
-            " Im Portfolio"
+            "💡 **Farblegende:** 🥇/🥈/🥉 **Top Dip-Scores** | 🟩 **GD200:**"
+            " Steigt an (GD200 > GD200 v10T) | 🟩 **EMA50:** EMA50 > GD200 | 🟩"
+            " **RSI:** RSI < 35 | 🟪 **Lila:** Im Portfolio"
         )
 
         col_sort1, col_sort2 = st.columns([2, 2])
@@ -459,7 +464,7 @@ with tab2:
             sort_kriterium = st.selectbox(
                 "🏆 Watchlist Sortierung nach:",
                 [
-                    "🔥 RSI (Niedrigster zuerst)",  # Default Sortierung!
+                    "🔥 RSI (Niedrigster zuerst)",
                     "🚀 Dip-Potential Score",
                     "🎯 Abstand zu RSI 35 Zielkurs",
                     "📊 Nähe zu GD200-Unterstützung",
@@ -537,6 +542,15 @@ with tab2:
             axis=1,
         )
 
+        # NEU: SPALTE FÜR GD200 VOR 10 TAGEN
+        display_df["GD200 v10T"] = df_watch.apply(
+            lambda r: (
+                f"{r['GD200_10d']:.2f} €"
+                f" ({((r['GD200_10d'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
+            ),
+            axis=1,
+        )
+
         display_df["EMA50"] = df_watch.apply(
             lambda r: (
                 f"{r['EMA50']:.2f} €"
@@ -564,13 +578,26 @@ with tab2:
                             "background-color: #e8daef; color: #111111;"
                         )
 
-                if row_raw["GD200"] <= row_raw["Kurs"]:
+                # HIGHLIGHTING GD200: Grün wenn GD200 > GD200 vor 10 Tagen, sonst rot
+                if row_raw["GD200_steigt"]:
                     styles.loc[idx, "GD200"] = (
                         "background-color: #d4edda; color: #155724;"
                         " font-weight: bold;"
                     )
                 else:
                     styles.loc[idx, "GD200"] = (
+                        "background-color: #f8d7da; color: #721c24;"
+                        " font-weight: bold;"
+                    )
+
+                # HIGHLIGHTING EMA50: Grün wenn EMA50 > GD200, sonst rot
+                if row_raw["EMA50"] > row_raw["GD200"]:
+                    styles.loc[idx, "EMA50"] = (
+                        "background-color: #d4edda; color: #155724;"
+                        " font-weight: bold;"
+                    )
+                else:
+                    styles.loc[idx, "EMA50"] = (
                         "background-color: #f8d7da; color: #721c24;"
                         " font-weight: bold;"
                     )
@@ -729,7 +756,7 @@ with tab3:
                     )
                 else:
                     signal = (
-                        f"🛡️ **2. HÄLFTE LÄUFT** (Tag"
+                        f"🛡️ **2. HÄLHFE LÄUFT** (Tag"
                         f" {trading_days_since_t1}/20 seit T1)\n\n"
                         f"• EMA20-Stop im Broker: **{ema20_today:.2f} €**"
                         f" (Abstand: {dist_ema20_pct:+.2f}%)\n"
