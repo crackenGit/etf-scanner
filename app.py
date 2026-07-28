@@ -177,6 +177,7 @@ def berechne_indikatoren(isin):
         pass
 
     close = data["Close"].dropna()
+    low = data["Low"].dropna() if "Low" in data else close
     gd200 = close.rolling(window=200).mean()
     ema50 = close.ewm(span=50, adjust=False).mean()
 
@@ -191,6 +192,7 @@ def berechne_indikatoren(isin):
     ag_today = float(avg_gain.iloc[-1])
     al_today = float(avg_loss.iloc[-1])
     c_today = float(close.iloc[-1])
+    tages_tief = float(low.iloc[-1]) if not low.empty else c_today
     rsi_today = float(rsi.iloc[-1])
 
     if rsi_today > 35.0:
@@ -213,15 +215,20 @@ def berechne_indikatoren(isin):
         perf_1w = ((c_today - close_1w) / close_1w) * 100
 
     # ==========================================
-    # NEU: TURNAROUND-LOGIK STATT STARREM 3%-FILTER
+    # NEU: INTELLIGENTE TURNAROUND-LOGIK
     # ==========================================
     rsi_heute = rsi_today
     rsi_gestern = float(rsi.iloc[-2]) if len(rsi) >= 2 else rsi_heute
 
-    # Ein fallendes Messer liegt nur vor, solange der RSI noch weiter fällt.
-    # Schlägt er einen Haken nach oben (rsi_heute > rsi_gestern), ist der Boden nahe.
-    rsi_dreht_nach_oben = rsi_heute > rsi_gestern
-    is_fallendes_messer = not rsi_dreht_nach_oben
+    # Pfad 1: Intraday-Turnaround (RSI < 35 UND Kurs mind. +0.3% über heutigem Tagestief)
+    intraday_turnaround = (rsi_heute < 35.0) and (c_today >= tages_tief * 1.003)
+
+    # Pfad 2: Vortags-Turnaround (RSI war gestern < 35 UND steigt heute an)
+    vortag_turnaround = (rsi_gestern < 35.0) and (rsi_heute > rsi_gestern)
+
+    # Ein fallendes Messer liegt vor, solange KEINER der beiden Turnarounds greift
+    turnaround_erkannt = intraday_turnaround or vortag_turnaround
+    is_fallendes_messer = not turnaround_erkannt
 
     # ==========================================
     # DIP-POTENTIAL-SCORE
@@ -261,6 +268,24 @@ def berechne_indikatoren(isin):
 # 3. APP USER INTERFACE
 # ==========================================
 st.title("📈 ETF Dip-Scanner & Portfolio-Manager")
+
+# --- NEU: ERKLÄRUNG DER TURNAROUND-LOGIK IN DER UI ---
+with st.expander("ℹ️ Wie funktioniert die Turnaround-Erkennung? (Hier klicken)"):
+    st.markdown("""
+    ### 🔄 Turnaround-Logik (Erholung vor dem Kauf)
+    Ein ETF mit **RSI < 35** ist erst dann ein **echtes Kaufsignal**, wenn der Verkaufsdruck nachlässt und Käufer in den Markt zurückkehren.
+    
+    Das Skript prüft automatisch zwei Wege:
+    
+    1. **Intraday-Turnaround (Einstieg am selben Tag):**
+       * Der RSI liegt aktuell **unter 35** **UND** der Kurs hat sich um mindestens **+0,3 % vom heutigen Tagestief erholt**.
+       * Ideal für deinen Check zwischen 16:00 und 17:00 Uhr vor Xetra-Schluss!
+    
+    2. **Vortags-Turnaround (Klassischer V-Haken):**
+       * Der RSI lag **gestern bereits unter 35** **UND** der RSI ist heute höher als gestern (`RSI_heute > RSI_gestern`).
+    
+    *Solange keiner dieser beiden Fälle zutrifft, gilt der Wert als **'fallendes Messer'** und das Kaufsignal wird blockiert.*
+    """)
 
 if "letztes_update" in st.session_state:
     st.caption(
@@ -366,7 +391,7 @@ with tab1:
     if kauf:
         st.success(
             f"**{len(kauf)} Kaufsignal(e) gefunden!** (RSI < 35, Kurs > GD200,"
-            " RSI dreht nach oben)"
+            " Turnaround bestätigt)"
         )
         for item in kauf:
             rsi_bg = "#d4edda" if item["RSI"] < 35 else "#f8d7da"
