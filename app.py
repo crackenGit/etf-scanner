@@ -278,7 +278,7 @@ with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     2. **Kurs > GD200:** Der ETF notiert über seiner langfristigen 200-Tage-Linie.
     3. **Intakter Grundtrend:** 
         * **EMA50 > GD200:** Mittelfristiger Trend liegt über dem Langfristtrend.
-        * **GD200 steigt an:** GD200 heute ist höher als der GD200 vor 10 Handelstagen.
+        * **GD200 steigt an:** GD200 heute ist höher als der GD200 vor 10 Handelstagen (`GD200 v10T`).
     4. **Turnaround-Logik bestätigt:** Kein fallendes Messer!
     
     ### 🔄 Turnaround-Logik (Erholung vor dem Kauf)
@@ -455,8 +455,9 @@ with tab2:
     if watch:
         st.caption(
             "💡 **Farblegende:** 🥇/🥈/🥉 **Top Dip-Scores** | 🟩 **GD200:**"
-            " Steigt an (GD200 > GD200 v10T) | 🟩 **EMA50:** EMA50 > GD200 | 🟩"
-            " **RSI:** RSI < 35 | 🟪 **Lila:** Im Portfolio"
+            " Kurs > GD200 | 🟩 **GD200 v10T:** GD200 steigt (GD200 > GD200 v10T)"
+            " | 🟩 **EMA50:** EMA50 > GD200 | 🟩 **RSI:** RSI < 35 | 🟪 **Lila:**"
+            " Im Portfolio"
         )
 
         col_sort1, col_sort2 = st.columns([2, 2])
@@ -542,7 +543,6 @@ with tab2:
             axis=1,
         )
 
-        # NEU: SPALTE FÜR GD200 VOR 10 TAGEN
         display_df["GD200 v10T"] = df_watch.apply(
             lambda r: (
                 f"{r['GD200_10d']:.2f} €"
@@ -578,14 +578,26 @@ with tab2:
                             "background-color: #e8daef; color: #111111;"
                         )
 
-                # HIGHLIGHTING GD200: Grün wenn GD200 > GD200 vor 10 Tagen, sonst rot
-                if row_raw["GD200_steigt"]:
+                # HIGHLIGHTING GD200: Grün wenn GD200 < Kurs (Kurs > GD200), sonst rot
+                if row_raw["GD200"] < row_raw["Kurs"]:
                     styles.loc[idx, "GD200"] = (
                         "background-color: #d4edda; color: #155724;"
                         " font-weight: bold;"
                     )
                 else:
                     styles.loc[idx, "GD200"] = (
+                        "background-color: #f8d7da; color: #721c24;"
+                        " font-weight: bold;"
+                    )
+
+                # HIGHLIGHTING GD200 v10T: Grün wenn GD200 > GD200 v10T (steigt), sonst rot
+                if row_raw["GD200_steigt"]:
+                    styles.loc[idx, "GD200 v10T"] = (
+                        "background-color: #d4edda; color: #155724;"
+                        " font-weight: bold;"
+                    )
+                else:
+                    styles.loc[idx, "GD200 v10T"] = (
                         "background-color: #f8d7da; color: #721c24;"
                         " font-weight: bold;"
                     )
@@ -602,6 +614,7 @@ with tab2:
                         " font-weight: bold;"
                     )
 
+                # HIGHLIGHTING RSI: Grün wenn RSI < 35, sonst rot
                 if row_raw["RSI"] < 35.0:
                     styles.loc[idx, "RSI"] = (
                         "background-color: #d4edda; color: #155724;"
