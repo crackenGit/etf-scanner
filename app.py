@@ -220,8 +220,8 @@ def berechne_indikatoren(isin):
     rsi_heute = rsi_today
     rsi_gestern = float(rsi.iloc[-2]) if len(rsi) >= 2 else rsi_heute
 
-    # Pfad 1: Intraday-Turnaround (RSI < 35 UND Kurs mind. +0.3% über heutigem Tagestief)
-    intraday_turnaround = (rsi_heute < 35.0) and (c_today >= tages_tief * 1.003)
+    # Pfad 1: Intraday-Turnaround (RSI < 35 UND Kurs mind. +0.5% über heutigem Tagestief)
+    intraday_turnaround = (rsi_heute < 35.0) and (c_today >= tages_tief * 1.005)
 
     # Pfad 2: Vortags-Turnaround (RSI war gestern < 35 UND steigt heute an)
     vortag_turnaround = (rsi_gestern < 35.0) and (rsi_heute > rsi_gestern)
@@ -270,15 +270,23 @@ def berechne_indikatoren(isin):
 st.title("📈 ETF Dip-Scanner & Portfolio-Manager")
 
 # --- NEU: ERKLÄRUNG DER TURNAROUND-LOGIK IN DER UI ---
-with st.expander("ℹ️ Wie funktioniert die Turnaround-Erkennung? (Hier klicken)"):
+with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     st.markdown("""
+    ### 🔄 Kriterien
+    1. Ein ETF muss unter **RSI < 35** liegen
+    2. Der Kurs muss **über** dem **SMA200** liegen
+    3. Intakter Grundtrend: 
+        * **EMA50** liegt **über** dem **SMA200**
+        * **SMA200** > **SMA200 vor 10 Tagen**
+    4. Turnaround Logik:
+    
     ### 🔄 Turnaround-Logik (Erholung vor dem Kauf)
     Ein ETF mit **RSI < 35** ist erst dann ein **echtes Kaufsignal**, wenn der Verkaufsdruck nachlässt und Käufer in den Markt zurückkehren.
     
     Das Skript prüft automatisch zwei Wege:
     
     1. **Intraday-Turnaround (Einstieg am selben Tag):**
-       * Der RSI liegt aktuell **unter 35** **UND** der Kurs hat sich um mindestens **+0,3 % vom heutigen Tagestief erholt**.
+       * Der RSI liegt aktuell **unter 35** **UND** der Kurs hat sich um mindestens **+0,5 % vom heutigen Tagestief erholt**.
        * Ideal für deinen Check zwischen 16:00 und 17:00 Uhr vor Xetra-Schluss!
     
     2. **Vortags-Turnaround (Klassischer V-Haken):**
