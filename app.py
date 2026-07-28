@@ -213,6 +213,17 @@ def berechne_indikatoren(isin):
         perf_1w = ((c_today - close_1w) / close_1w) * 100
 
     # ==========================================
+    # NEU: TURNAROUND-LOGIK STATT STARREM 3%-FILTER
+    # ==========================================
+    rsi_heute = rsi_today
+    rsi_gestern = float(rsi.iloc[-2]) if len(rsi) >= 2 else rsi_heute
+
+    # Ein fallendes Messer liegt nur vor, solange der RSI noch weiter fällt.
+    # Schlägt er einen Haken nach oben (rsi_heute > rsi_gestern), ist der Boden nahe.
+    rsi_dreht_nach_oben = rsi_heute > rsi_gestern
+    is_fallendes_messer = not rsi_dreht_nach_oben
+
+    # ==========================================
     # DIP-POTENTIAL-SCORE
     # ==========================================
     rsi_score = max(0, (45 - rsi_today)) * 1.5
@@ -241,7 +252,7 @@ def berechne_indikatoren(isin):
         "gd200_steigt": gd200_steigt,
         "perf_1w": perf_1w,
         "dip_score": dip_score,
-        "is_fallendes_messer": perf_1w < -3.0,
+        "is_fallendes_messer": is_fallendes_messer,
         "yahoo_zeit": yahoo_zeit,
     }, erfolgreicher_ticker
 
@@ -355,7 +366,7 @@ with tab1:
     if kauf:
         st.success(
             f"**{len(kauf)} Kaufsignal(e) gefunden!** (RSI < 35, Kurs > GD200,"
-            " kein fallendes Messer)"
+            " RSI dreht nach oben)"
         )
         for item in kauf:
             rsi_bg = "#d4edda" if item["RSI"] < 35 else "#f8d7da"
@@ -427,7 +438,6 @@ with tab2:
         df_watch = pd.DataFrame(watch)
 
         # 1. DEDUPLIZIERUNG & BESTIMMUNG DER DIP-SCORE RÄNGE
-        # Erst nach Dip Score absteigend sortieren, damit der beste Ticker pro ISIN/Stamm behalten wird
         df_watch = df_watch.sort_values(by="Dip Score", ascending=False)
         df_watch["Ticker_Base"] = df_watch["Ticker"].apply(
             lambda x: str(x).split(".")[0] if x else ""
@@ -437,10 +447,9 @@ with tab2:
             subset=["Ticker_Base"], keep="first"
         )
 
-        # Dip-Score Rang zuweisen (1 = Höchster Dip Score, 2 = Zweithöchster, etc.)
         df_watch["Dip_Rank"] = range(1, len(df_watch) + 1)
 
-        # 2. TABELLEN-SORTIERUNG (Standard: Kleinstes RSI zuerst)
+        # 2. TABELLEN-SORTIERUNG
         if sort_kriterium == "🔥 RSI (Niedrigster zuerst)":
             df_watch = df_watch.sort_values(by="RSI", ascending=True)
         elif sort_kriterium == "🚀 Dip-Potential Score":
@@ -456,7 +465,7 @@ with tab2:
 
         df_watch = df_watch.reset_index(drop=True)
 
-        # 3. Ticker-Spalte formatieren (Medaillen BLASE NUR für Top-3 DIP SCORES)
+        # 3. Ticker-Spalte formatieren
         def format_ticker_rank(row):
             t = row["Ticker"]
             rank = row["Dip_Rank"]
@@ -516,14 +525,12 @@ with tab2:
             for idx in df.index:
                 row_raw = df_watch.loc[idx]
 
-                # Portfolio-Markierung (Lila)
                 if row_raw.get("Ist_Portfolio", False):
                     for col in df.columns:
                         styles.loc[idx, col] = (
                             "background-color: #e8daef; color: #111111;"
                         )
 
-                # GD200 Status
                 if row_raw["GD200"] <= row_raw["Kurs"]:
                     styles.loc[idx, "GD200"] = (
                         "background-color: #d4edda; color: #155724;"
@@ -535,7 +542,6 @@ with tab2:
                         " font-weight: bold;"
                     )
 
-                # RSI Status
                 if row_raw["RSI"] < 35.0:
                     styles.loc[idx, "RSI"] = (
                         "background-color: #d4edda; color: #155724;"
@@ -547,7 +553,6 @@ with tab2:
                         " font-weight: bold;"
                     )
 
-                # Ticker Highlighting basierend auf DIP SCORE RANG (1. Gold, 2. Silber, 3. Bronze)
                 dip_rank = row_raw.get("Dip_Rank", 999)
                 if dip_rank == 1:
                     styles.loc[idx, "Ticker"] = (
@@ -567,7 +572,6 @@ with tab2:
                 else:
                     styles.loc[idx, "Ticker"] = "font-weight: bold;"
 
-                # Dip Score Spalte
                 styles.loc[idx, "Dip Score"] = (
                     "font-weight: bold; text-align: center;"
                 )
