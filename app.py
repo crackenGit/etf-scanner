@@ -61,6 +61,16 @@ PORTFOLIO = [
         "partially_sold": False,  # True setzen, sobald Tranche 1 am EMA50 verkauft wurde
         "t1_sell_date": None,  # Datum von Teilverkauf 1 (z. B. '2026-07-15')
     },
+    {
+        "ticker": "SEC0.DE",
+        "isin": "IE000I8KRLL9",
+        "name": "iShares Global Semiconductors",
+        "buy_date": "2026-07-29",
+        "buy_price": 15.24,
+        "shares": 33,
+        "partially_sold": False,  # True setzen, sobald Tranche 1 am EMA50 verkauft wurde
+        "t1_sell_date": None,  # Datum von Teilverkauf 1 (z. B. '2026-07-15')
+    },
 ]
 
 # ==========================================
@@ -83,6 +93,7 @@ MANUAL_TICKERS = {
     "IE00BWBXM279": ["WCOS.L", "STPL.DE"],
     "IE00BM67HR13": ["XDWD.DE", "XDWG.L"],
     "IE00BWBXM386": ["ZPDD.DE", "SXLY.L"],
+    "IE00BWBXM386": ["SEC0.DE", "SEMI.AS"],
 }
 
 
