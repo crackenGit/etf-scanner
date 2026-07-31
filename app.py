@@ -246,7 +246,6 @@ def berechne_indikatoren(isin):
 # ==========================================
 st.title("📈 ETF Dip-Scanner & Portfolio-Manager")
 
-# --- ERKLÄRUNG DER TURNAROUND-LOGIK ---
 with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     st.markdown("""
     ### 🔄 Kriterien für ein Kaufsignal
@@ -256,22 +255,8 @@ with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
         * **EMA50 > GD200:** Mittelfristiger Trend liegt über dem Langfristtrend.
         * **GD200 steigt an:** GD200 heute ist höher als der GD200 vor 10 Handelstagen (`GD200 v10T`).
     4. **Turnaround-Logik bestätigt:** Kein fallendes Messer!
-    
-    ### 🔄 Turnaround-Logik (Erholung vor dem Kauf)
-    Ein ETF mit **RSI < 35** ist erst dann ein **echtes Kaufsignal**, wenn der Verkaufsdruck nachlässt und Käufer in den Markt zurückkehren.
-    
-    Das Skript prüft automatisch zwei Wege:
-    
-    1. **Intraday-Turnaround (Einstieg am selben Tag):**
-       * Der RSI liegt aktuell **unter 35** **UND** der Kurs hat sich um mindestens **+0,5 % vom heutigen Tagestief erholt**.
-    
-    2. **Vortags-Turnaround (Klassischer V-Haken):**
-       * Der RSI lag **gestern bereits unter 35** **UND** der RSI ist heute höher als gestern (`RSI_heute > RSI_gestern`).
-    
-    *Solange keiner dieser beiden Fälle zutrifft, gilt der Wert als **'fallendes Messer'** und das Kaufsignal wird blockiert.*
     """)
 
-# --- EXPLANANDER FÜR VERKAUFSTRANCHEN & ABSICHERUNG ---
 with st.expander("📊 Wie werden Kauf- & Verkaufstranchen gesetzt? (Regelwerk)", expanded=False):
     col_t1, col_t2 = st.columns(2)
     
@@ -288,15 +273,6 @@ with st.expander("📊 Wie werden Kauf- & Verkaufstranchen gesetzt? (Regelwerk)"
         * **Ziel:** **52-Wochen-Hoch / ATH (-1 % Puffer)**.
         * **Sinn:** Maximalziel für den Trend-Swing (1–3 Monate).
         """)
-        
-    st.divider()
-    
-    st.markdown("""
-    ### 🛡️ Tranche 2 Stop Loss (Gewinnabsicherung)
-    * **Vor Tranche-1-Verkauf:** Zeigt zur Orientierung das erste Ziel (**EMA50**).
-    * **Nach Tranche-1-Verkauf:** Das Stop-Loss-Limit wechselt fix auf den **tatsächlichen Verkaufskurs von Tranche 1**.
-    * **Vorteil:** Sobald Tranche 1 im Gewinn realisiert ist, sichert dieser Stop den erzielten Preis standfest ab.
-    """)
 
 if "letztes_update" in st.session_state:
     st.caption(
@@ -423,11 +399,16 @@ if failed_list:
         )
         st.dataframe(pd.DataFrame(failed_list), use_container_width=True, hide_index=True)
 
+# Aktive Positionen für Tab 3 ermitteln (noch nicht vollständig verkauft)
+aktive_positionen = [p for p in PORTFOLIO if not p.get("sold", False)]
+historie_positionen = [p for p in PORTFOLIO if p.get("partially_sold", False) or p.get("sold", False)]
+
 # TABS REGISTER
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     f"🔥 Kaufsignale ({len(st.session_state.get('kauf_signale', []))})",
     f"📋 Watchlist ({len(st.session_state.get('watchlist_signale', []))})",
-    f"💼 Mein Portfolio ({len(PORTFOLIO)})",
+    f"💼 Mein Portfolio ({len(aktive_positionen)})",
+    f"📜 Historie ({len(historie_positionen)})",
 ])
 
 # --- TAB 1: KAUFSIGNALE ---
@@ -683,7 +664,10 @@ with tab2:
 with tab3:
     st.subheader("📊 Aktive Positionen & Ausstiegs-Manager")
 
-    for pos in PORTFOLIO:
+    if not aktive_positionen:
+        st.info("Aktuell keine aktiven offene Positionen im Portfolio.")
+
+    for pos in aktive_positionen:
         try:
             df = yf.download(pos["ticker"], period="5y", progress=False)
             if isinstance(df.columns, pd.MultiIndex):
@@ -710,7 +694,7 @@ with tab3:
             ema50_today = float(df["EMA50"].iloc[-1])
             ema20_today = float(df["EMA20"].iloc[-1])
 
-            # ATH & ATH - 1% Berechnung auf Basis der letzten 5 Jahre
+            # ATH & ATH - 1% Berechnung
             ath_price = float(df["High"].max()) if "High" in df else float(df["Close"].max())
             ath_target_price = ath_price * 0.99
             dist_ath_pct = ((current_price - ath_target_price) / current_price) * 100
@@ -718,9 +702,7 @@ with tab3:
             is_partially_sold = pos.get("partially_sold", False)
             buy_price = float(pos["buy_price"])
 
-            # ANPASSUNG: Stop-Loss Limit
-            # Wenn Tranche 1 noch NICHT erfolgt: EMA50 als Ziel/Prognose anzeigen
-            # Wenn Tranche 1 ERFOLGT ist: Tatsächlicher Verkaufskurs von Tranche 1
+            # Stop-Loss Limit Festlegung
             if is_partially_sold and pos.get("t1_sell_price"):
                 stop_loss_limit = float(pos["t1_sell_price"])
             else:
@@ -743,7 +725,6 @@ with tab3:
             signal_type = "info"
             
             if not is_partially_sold:
-                # Tranche 1 noch NICHT erfolgt
                 if current_price >= ema50_today:
                     signal_type = "success"
                     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -759,19 +740,21 @@ with tab3:
                         f"(Abstand: {dist_ema50_pct:+.2f}%)"
                     )
             else:
-                # Tranche 1 BEREITS ERFOLGT -> Tranche 2 & Tranche 1 Verkaufskurs-Stop
                 if current_price >= ath_target_price:
                     signal_type = "success"
+                    today_str = datetime.now().strftime("%Y-%m-%d")
                     signal = (
                         f"🚀 **TRANCHE 2 ZIEL (ATH -1%) ERREICHT!**\n\n"
-                        f"👉 ATH (5J) liegt bei {ath_price:.2f} € → Restliche 50% Verkaufen bei **{ath_target_price:.2f} €**!"
+                        f"👉 ATH (5J) liegt bei {ath_price:.2f} € → Restliche 50% Verkaufen bei **{ath_target_price:.2f} €**!\n"
+                        f"👉 Nach Verkauf in `portfolio.py` eintragen: `'sold': True`, `'t2_sell_date': '{today_str}'`, `'t2_sell_price': {current_price:.2f}`"
                     )
                 elif current_price <= stop_loss_limit:
                     signal_type = "error"
+                    today_str = datetime.now().strftime("%Y-%m-%d")
                     signal = (
                         f"🚨 **STOP LOSS UNTERSCHRITTEN!**\n\n"
-                        f"Kurs ({current_price:.2f} €) ist unter den Tranche-1-Verkaufskurs ({stop_loss_limit:.2f} €) gefallen. "
-                        f"Restliche 50% glattstellen zur Gewinnabsicherung!"
+                        f"Kurs ({current_price:.2f} €) ist unter den Tranche-1-Verkaufskurs ({stop_loss_limit:.2f} €) gefallen.\n"
+                        f"Restliche 50% glattstellen! In `portfolio.py` eintragen: `'sold': True`, `'t2_sell_date': '{today_str}'`, `'t2_sell_price': {current_price:.2f}`"
                     )
                 else:
                     signal = (
@@ -785,7 +768,7 @@ with tab3:
                     f"### {pos['name']} (`{pos['ticker']}`) — ISIN: `{pos['isin']}`"
                 )
 
-                # Zeile 1: Basis-Kennzahlen + Aktueller RSI
+                # Zeile 1: Basis-Kennzahlen
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric(
                     "Depot-Status",
@@ -810,14 +793,26 @@ with tab3:
 
                 st.markdown("---")
 
-                # Zeile 2: Tranche 1 Ziel, Tranche 2 ATH, Stop Loss (Tranche 1 Verkaufskurs)
+                # Zeile 2: Tranche 1 (Verkauft oder Ziel), Tranche 2 ATH, Stop Loss
                 t1, t2, t3 = st.columns(3)
                 
-                t1.metric(
-                    "Tranche 1 Ziel (EMA50)",
-                    f"{ema50_today:.2f} €",
-                    f"{((ema50_today - current_price) / current_price) * 100:+.2f}% zum Kurs",
-                )
+                # ANPASSUNG: Tranche 1 Anzeige je nach Verkaufsstatus
+                if is_partially_sold and pos.get("t1_sell_price"):
+                    t1_price = float(pos["t1_sell_price"])
+                    t1_profit_pct = ((t1_price - buy_price) / buy_price) * 100
+                    t1_profit_eur = (t1_price - buy_price) * (pos["shares"] / 2.0)
+                    
+                    t1.metric(
+                        "Tranche 1 (Realisiert)",
+                        f"{t1_price:.2f} €",
+                        f"Gewinn: {t1_profit_pct:+.2f}% ({t1_profit_eur:+.2f} €)",
+                    )
+                else:
+                    t1.metric(
+                        "Tranche 1 Ziel (EMA50)",
+                        f"{ema50_today:.2f} €",
+                        f"{((ema50_today - current_price) / current_price) * 100:+.2f}% zum Kurs",
+                    )
 
                 t2.metric(
                     "Tranche 2: ATH 5J (Ziel: ATH -1%)",
@@ -837,8 +832,6 @@ with tab3:
                     st.success(signal)
                 elif signal_type == "error":
                     st.error(signal)
-                elif signal_type == "warning":
-                    st.warning(signal)
                 else:
                     st.info(signal)
 
@@ -846,3 +839,66 @@ with tab3:
             st.error(
                 f"Fehler beim Laden von Position {pos.get('ticker')}: {e}"
             )
+
+# --- TAB 4: HISTORIE & GESCHLOSSENE / TEILVERKAUFTE TRADES ---
+with tab4:
+    st.subheader("📜 History & Ausgewertete Trades")
+
+    if not historie_positionen:
+        st.info("Noch keine Teilverkäufe oder abgeschlossenen Trades in der Historie vorhanden.")
+    else:
+        historie_liste = []
+        for pos in historie_positionen:
+            is_sold = pos.get("sold", False)
+            is_partially = pos.get("partially_sold", False)
+
+            buy_price = float(pos["buy_price"])
+            shares = float(pos["shares"])
+            einsatz = buy_price * shares
+            half_shares = shares / 2.0
+
+            # Haltedauer Berechnung
+            buy_dt = pd.to_datetime(pos.get("buy_date", datetime.now().strftime("%Y-%m-%d")))
+            if is_sold and pos.get("t2_sell_date"):
+                end_dt = pd.to_datetime(pos["t2_sell_date"])
+            elif is_partially and pos.get("t1_sell_date"):
+                end_dt = pd.to_datetime(pos["t1_sell_date"])
+            else:
+                end_dt = pd.to_datetime(datetime.now().strftime("%Y-%m-%d"))
+
+            days_held = max(0, (end_dt - buy_dt).days)
+
+            # Tranche 1 Gewinn
+            t1_price = float(pos.get("t1_sell_price", buy_price))
+            gewinn_t1 = (t1_price - buy_price) * half_shares if is_partially or is_sold else 0.0
+
+            # Tranche 2 Gewinn
+            if is_sold:
+                t2_price = float(pos.get("t2_sell_price", buy_price))
+                gewinn_t2 = (t2_price - buy_price) * half_shares
+                status_label = "✅ Vollständig verkauft"
+            else:
+                # Bei aktuell laufendem Teilverkauf unrealisierten Gewinn für T2 ermitteln
+                try:
+                    df_h = yf.download(pos["ticker"], period="5d", progress=False)
+                    curr_p = float(df_h["Close"].iloc[-1]) if not df_h.empty else buy_price
+                except Exception:
+                    curr_p = buy_price
+                gewinn_t2 = (curr_p - buy_price) * half_shares
+                status_label = "🟡 Teilverkauft (Rest aktiv)"
+
+            gesamt_gewinn_eur = gewinn_t1 + gewinn_t2
+            gesamt_gewinn_pct = (gesamt_gewinn_eur / einsatz) * 100 if einsatz > 0 else 0.0
+
+            historie_liste.append({
+                "Status": status_label,
+                "Name / Kürzel": f"{pos.get('name', pos['ticker'])} ({pos['ticker']})",
+                "ISIN": pos["isin"],
+                "Haltedauer": f"{days_held} Tage",
+                "Einsatz": f"{einsatz:.2f} €",
+                "Gewinn (€)": f"{gesamt_gewinn_eur:+.2f} €",
+                "Gewinn (%)": f"{gesamt_gewinn_pct:+.2f}%",
+            })
+
+        df_hist = pd.DataFrame(historie_liste)
+        st.dataframe(df_hist, use_container_width=True, hide_index=True)
