@@ -669,33 +669,24 @@ with tab3:
 
     for pos in aktive_positionen:
         try:
-            df = yf.download(pos["ticker"], period="5y", progress=False)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
+            # NEU: Nutzung der zentralen Funktion über die ISIN (exakt wie in Tab 1 & 2)
+            data, ticker_used = berechne_indikatoren(pos["isin"])
+            
+            if not data:
+                st.error(f"Keine Kursdaten für {pos['name']} ({pos['isin']}) verfügbar.")
+                continue
 
-            # Indikatoren berechnen
-            delta = df["Close"].diff()
-            gain = (
-                delta.where(delta > 0, 0).ewm(alpha=1 / 14, adjust=False).mean()
-            )
-            loss = (
-                (-delta.where(delta < 0, 0))
-                .ewm(alpha=1 / 14, adjust=False)
-                .mean()
-            )
-            rs = gain / loss
-            df["RSI"] = 100 - (100 / (1 + rs))
+            current_price = data["close"]
+            rsi_today = data["rsi"]
+            ema50_today = data["ema50"]
 
-            df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
-            df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
-
-            current_price = float(df["Close"].iloc[-1])
-            rsi_today = float(df["RSI"].iloc[-1])
-            ema50_today = float(df["EMA50"].iloc[-1])
-            ema20_today = float(df["EMA20"].iloc[-1])
-
-            # ATH & ATH - 1% Berechnung
-            ath_price = float(df["High"].max()) if "High" in df else float(df["Close"].max())
+            # ATH & ATH - 1% Berechnung (separat für ATH laden)
+            # Um das ATH der letzten 5 Jahre exakt zu bestimmen:
+            df_ath = yf.download(ticker_used, period="5y", progress=False)
+            if isinstance(df_ath.columns, pd.MultiIndex):
+                df_ath.columns = df_ath.columns.get_level_values(0)
+            
+            ath_price = float(df_ath["High"].max()) if "High" in df_ath else float(df_ath["Close"].max())
             ath_target_price = ath_price * 0.99
             dist_ath_pct = ((current_price - ath_target_price) / current_price) * 100
 
@@ -721,9 +712,8 @@ with tab3:
                 today_date = pd.to_datetime(datetime.now().strftime("%Y-%m-%d"))
                 days_held = (today_date - buy_date).days
 
-            # --- SIGNAL-LOGIK & BERICHTS-ERSTELLUNG ---
+            # Signal-Logik
             signal_type = "info"
-            
             if not is_partially_sold:
                 if current_price >= ema50_today:
                     signal_type = "success"
@@ -765,10 +755,9 @@ with tab3:
             # --- ANZEIGE IN CONTAINERN ---
             with st.container(border=True):
                 st.markdown(
-                    f"### {pos['name']} (`{pos['ticker']}`) — ISIN: `{pos['isin']}`"
+                    f"### {pos['name']} (`{ticker_used}`) — ISIN: `{pos['isin']}`"
                 )
 
-                # Zeile 1: Basis-Kennzahlen
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric(
                     "Depot-Status",
@@ -788,15 +777,13 @@ with tab3:
                 c4.metric(
                     "Aktueller RSI",
                     f"{rsi_today:.1f}",
-                    f"EMA20: {ema20_today:.2f} €",
+                    f"EMA50: {ema50_today:.2f} €",
                 )
 
                 st.markdown("---")
 
-                # Zeile 2: Tranche 1 (Verkauft oder Ziel), Tranche 2 ATH, Stop Loss
                 t1, t2, t3 = st.columns(3)
                 
-                # ANPASSUNG: Tranche 1 Anzeige je nach Verkaufsstatus
                 if is_partially_sold and pos.get("t1_sell_price"):
                     t1_price = float(pos["t1_sell_price"])
                     t1_profit_pct = ((t1_price - buy_price) / buy_price) * 100
@@ -827,7 +814,6 @@ with tab3:
                     help="Verkaufskurs von Tranche 1 (vor Teilverkauf: Orientierung am EMA50)",
                 )
 
-                # Signal-Box
                 if signal_type == "success":
                     st.success(signal)
                 elif signal_type == "error":
@@ -836,9 +822,7 @@ with tab3:
                     st.info(signal)
 
         except Exception as e:
-            st.error(
-                f"Fehler beim Laden von Position {pos.get('ticker')}: {e}"
-            )
+            st.error(f"Fehler bei Position {pos.get('isin')}: {e}")
 
 # --- TAB 4: HISTORIE & GESCHLOSSENE / TEILVERKAUFTE TRADES ---
 with tab4:
@@ -894,8 +878,8 @@ with tab4:
             else:
                 # Bei aktuell laufendem Teilverkauf unrealisierten Gewinn für T2 ermitteln
                 try:
-                    df_h = yf.download(pos["ticker"], period="5d", progress=False)
-                    curr_p = float(df_h["Close"].iloc[-1]) if not df_h.empty else buy_price
+                    data, _ = berechne_indikatoren(pos["isin"])
+                    curr_p = data["close"] if data else buy_price
                 except Exception:
                     curr_p = buy_price
                 t2_gewinn_eur = (curr_p - buy_price) * half_shares
