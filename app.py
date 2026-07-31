@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import logging
 import warnings
@@ -244,7 +245,7 @@ def berechne_indikatoren(isin):
 # ==========================================
 st.title("📈 ETF Dip-Scanner & Portfolio-Manager")
 
-# --- ERKLÄRUNG DER TURNAROUND-LOGIK (VOLLSTÄNDIG) ---
+# --- ERKLÄRUNG DER TURNAROUND-LOGIK ---
 with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     st.markdown("""
     ### 🔄 Kriterien für ein Kaufsignal
@@ -293,76 +294,107 @@ for p in PORTFOLIO:
 
 st.sidebar.info(f"📋 **{len(etfs)} ETFs** werden überwacht.")
 
+# --- PARALLELER DATEN-SCANNER (PUNKT 1 & 3) ---
 if "kauf_signale" not in st.session_state:
-    kauf_signale, watchlist_signale = [], []
+    kauf_signale, watchlist_signale, fehlgeschlagene_etfs = [], [], []
     letzter_zeitstempel = "k.A."
-    progress_bar = st.progress(0, text="Lade Kursdaten für Scanner...")
+    progress_bar = st.progress(0, text="⚡ Lade Kursdaten (Parallel-Scan)...")
 
-    for i, item in enumerate(etfs, 1):
-        progress_bar.progress(
-            i / len(etfs), text=f"Prüfe ETF {i}/{len(etfs)}: {item['isin']}"
-        )
+    total_etfs = len(etfs)
+    completed_count = 0
+
+    def load_etf_data(item):
         data, ticker = berechne_indikatoren(item["isin"])
+        return item, data, ticker
 
-        if not data:
-            continue
+    # Parallelisierung mit bis zu 8 Threads
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(load_etf_data, item) for item in etfs]
 
-        if data.get("yahoo_zeit") and data["yahoo_zeit"] != "k.A.":
-            letzter_zeitstempel = data["yahoo_zeit"]
+        for future in as_completed(futures):
+            completed_count += 1
+            item, data, ticker = future.result()
 
-        c, rsi, rsi35, gd200, gd200_10d, ema50, gd200_steigt, perf_1w, score, messer = (
-            data["close"],
-            data["rsi"],
-            data["rsi35_preis"],
-            data["gd200"],
-            data["gd200_vor_10d"],
-            data["ema50"],
-            data["gd200_steigt"],
-            data["perf_1w"],
-            data["dip_score"],
-            data["is_fallendes_messer"],
-        )
+            progress_bar.progress(
+                completed_count / total_etfs,
+                text=f"⚡ Scanne ETF {completed_count}/{total_etfs}: {item['isin']}",
+            )
 
-        grundtrend_ok = ema50 > gd200 and gd200_steigt
-        gd200_abstand = ((gd200 - c) / c) * 100
-        gd200_10d_abstand = ((gd200_10d - c) / c) * 100
-        rsi35_abstand = ((rsi35 - c) / c) * 100
+            if not data:
+                fehlgeschlagene_etfs.append({
+                    "Sektor": item["sektor"],
+                    "ISIN": item["isin"],
+                    "Ticker": ticker,
+                })
+                continue
 
-        is_kauf = grundtrend_ok and (rsi < 35) and (c > gd200) and (not messer)
-        is_watch = rsi < 40 and c >= (gd200 * 0.97)
-        is_in_portfolio = item["isin"] in portfolio_isins
+            if data.get("yahoo_zeit") and data["yahoo_zeit"] != "k.A.":
+                letzter_zeitstempel = data["yahoo_zeit"]
 
-        entry = {
-            "Sektor": item["sektor"],
-            "ISIN": item["isin"],
-            "Ticker": ticker,
-            "Kurs": c,
-            "RSI": round(rsi, 1),
-            "RSI 35 Preis": rsi35,
-            "RSI35_Abstand": rsi35_abstand,
-            "GD200": gd200,
-            "GD200_Abstand": gd200_abstand,
-            "GD200_10d": gd200_10d,
-            "GD200_10d_Abstand": gd200_10d_abstand,
-            "GD200_steigt": gd200_steigt,
-            "EMA50": ema50,
-            "1W Perf.": perf_1w,
-            "Dip Score": score,
-            "Zeitstempel": data["yahoo_zeit"],
-            "Ist_Kaufsignal": is_kauf,
-            "Ist_Portfolio": is_in_portfolio,
-        }
+            c, rsi, rsi35, gd200, gd200_10d, ema50, gd200_steigt, perf_1w, score, messer = (
+                data["close"],
+                data["rsi"],
+                data["rsi35_preis"],
+                data["gd200"],
+                data["gd200_vor_10d"],
+                data["ema50"],
+                data["gd200_steigt"],
+                data["perf_1w"],
+                data["dip_score"],
+                data["is_fallendes_messer"],
+            )
 
-        if is_kauf:
-            kauf_signale.append(entry)
+            grundtrend_ok = ema50 > gd200 and gd200_steigt
+            gd200_abstand = ((gd200 - c) / c) * 100
+            gd200_10d_abstand = ((gd200_10d - c) / c) * 100
+            rsi35_abstand = ((rsi35 - c) / c) * 100
 
-        if is_kauf or is_watch or is_in_portfolio:
-            watchlist_signale.append(entry)
+            is_kauf = grundtrend_ok and (rsi < 35) and (c > gd200) and (not messer)
+            is_watch = rsi < 40 and c >= (gd200 * 0.97)
+            is_in_portfolio = item["isin"] in portfolio_isins
+
+            entry = {
+                "Sektor": item["sektor"],
+                "ISIN": item["isin"],
+                "Ticker": ticker,
+                "Kurs": c,
+                "RSI": round(rsi, 1),
+                "RSI 35 Preis": rsi35,
+                "RSI35_Abstand": rsi35_abstand,
+                "GD200": gd200,
+                "GD200_Abstand": gd200_abstand,
+                "GD200_10d": gd200_10d,
+                "GD200_10d_Abstand": gd200_10d_abstand,
+                "GD200_steigt": gd200_steigt,
+                "EMA50": ema50,
+                "1W Perf.": perf_1w,
+                "Dip Score": score,
+                "Zeitstempel": data["yahoo_zeit"],
+                "Ist_Kaufsignal": is_kauf,
+                "Ist_Portfolio": is_in_portfolio,
+            }
+
+            if is_kauf:
+                kauf_signale.append(entry)
+
+            if is_kauf or is_watch or is_in_portfolio:
+                watchlist_signale.append(entry)
 
     progress_bar.empty()
     st.session_state["kauf_signale"] = kauf_signale
     st.session_state["watchlist_signale"] = watchlist_signale
+    st.session_state["fehlgeschlagene_etfs"] = fehlgeschlagene_etfs
     st.session_state["letztes_update"] = letzter_zeitstempel
+
+# --- GEPUFFERTE FEHLERMELDUNGEN ANZEIGEN (PUNKT 3) ---
+failed_list = st.session_state.get("fehlgeschlagene_etfs", [])
+if failed_list:
+    with st.expander(f"⚠️ Hinweis: {len(failed_list)} ETF(s) konnten nicht geladen werden"):
+        st.warning(
+            "Für folgende Werte konnten bei Yahoo Finance keine Kursdaten abgerufen werden "
+            "(z. B. fehlerhafte ISIN oder vorübergehende API-Sperre):"
+        )
+        st.dataframe(pd.DataFrame(failed_list), use_container_width=True, hide_index=True)
 
 # TABS REGISTER
 tab1, tab2, tab3 = st.tabs([
@@ -626,8 +658,8 @@ with tab3:
 
     for pos in PORTFOLIO:
         try:
-            # Maximale Daten laden zur exakten All-Time-High (ATH) Berechnung
-            df = yf.download(pos["ticker"], period="max", progress=False)
+            # PUNKT 2: period="5y" statt period="max" für schnellere Ladezeit
+            df = yf.download(pos["ticker"], period="5y", progress=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
@@ -652,7 +684,7 @@ with tab3:
             ema50_today = float(df["EMA50"].iloc[-1])
             ema20_today = float(df["EMA20"].iloc[-1])
 
-            # ATH & ATH - 1% Berechnung
+            # ATH & ATH - 1% Berechnung auf Basis der letzten 5 Jahre
             ath_price = float(df["High"].max())
             ath_target_price = ath_price * 0.99
             dist_ath_pct = ((current_price - ath_target_price) / current_price) * 100
@@ -664,7 +696,7 @@ with tab3:
             if is_partially_sold and pos.get("t1_sell_price"):
                 t1_sell_price = float(pos["t1_sell_price"])
             else:
-                t1_sell_price = ema50_today  # Falls T1 noch nicht gegriffen hat: geplantes Ziel
+                t1_sell_price = ema50_today
 
             # Stop-Loss Limit: Zwischenkurs aus Kaufkurs und Tranche1-Verkaufskurs/Ziel
             stop_loss_limit = (buy_price + t1_sell_price) / 2.0
@@ -706,7 +738,7 @@ with tab3:
                     signal_type = "success"
                     signal = (
                         f"🚀 **TRANCHE 2 ZIEL (ATH -1%) ERREICHT!**\n\n"
-                        f"👉 ATH liegt bei {ath_price:.2f} € → Restliche 50% Verkaufen bei **{ath_target_price:.2f} €**!"
+                        f"👉 ATH (5J) liegt bei {ath_price:.2f} € → Restliche 50% Verkaufen bei **{ath_target_price:.2f} €**!"
                     )
                 elif current_price <= stop_loss_limit:
                     signal_type = "error"
@@ -727,7 +759,7 @@ with tab3:
                     f"### {pos['name']} (`{pos['ticker']}`) — ISIN: `{pos['isin']}`"
                 )
 
-                # Zeile 1: Basis-Kennzahlen + Aktueller RSI als 4. Element
+                # Zeile 1: Basis-Kennzahlen + Aktueller RSI
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric(
                     "Depot-Status",
@@ -752,7 +784,7 @@ with tab3:
 
                 st.markdown("---")
 
-                # Zeile 2: Tranche 1 Ziel (vor Tranche 2 ATH platziert)
+                # Zeile 2: Tranche 1 Ziel, Tranche 2 ATH, Stop Loss
                 t1, t2, t3 = st.columns(3)
                 
                 t1.metric(
@@ -762,7 +794,7 @@ with tab3:
                 )
 
                 t2.metric(
-                    "Tranche 2: ATH (Ziel: ATH -1%)",
+                    "Tranche 2: ATH 5J (Ziel: ATH -1%)",
                     f"{ath_target_price:.2f} €",
                     f"ATH: {ath_price:.2f} € ({dist_ath_pct:+.2f}%)",
                 )
