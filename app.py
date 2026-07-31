@@ -857,6 +857,12 @@ with tab4:
             einsatz = buy_price * shares
             half_shares = shares / 2.0
 
+            # Verkaufsdatum (T2 Datum bei Vollverkauf, sonst T1 Datum)
+            if is_sold:
+                v_datum_str = pos.get("t2_sell_date", pos.get("t1_sell_date", "-"))
+            else:
+                v_datum_str = pos.get("t1_sell_date", "-")
+
             # Haltedauer Berechnung
             buy_dt = pd.to_datetime(pos.get("buy_date", datetime.now().strftime("%Y-%m-%d")))
             if is_sold and pos.get("t2_sell_date"):
@@ -868,14 +874,22 @@ with tab4:
 
             days_held = max(0, (end_dt - buy_dt).days)
 
-            # Tranche 1 Gewinn
-            t1_price = float(pos.get("t1_sell_price", buy_price))
-            gewinn_t1 = (t1_price - buy_price) * half_shares if is_partially or is_sold else 0.0
+            # --- TRANCHE 1 GEWINN ---
+            if is_partially or is_sold:
+                t1_price = float(pos.get("t1_sell_price", buy_price))
+                t1_gewinn_eur = (t1_price - buy_price) * half_shares
+                t1_gewinn_pct = ((t1_price - buy_price) / buy_price) * 100 if buy_price > 0 else 0.0
+                t1_str = f"{t1_gewinn_eur:+.2f} € ({t1_gewinn_pct:+.2f}%)"
+            else:
+                t1_gewinn_eur = 0.0
+                t1_str = "- "
 
-            # Tranche 2 Gewinn
+            # --- TRANCHE 2 GEWINN ---
             if is_sold:
                 t2_price = float(pos.get("t2_sell_price", buy_price))
-                gewinn_t2 = (t2_price - buy_price) * half_shares
+                t2_gewinn_eur = (t2_price - buy_price) * half_shares
+                t2_gewinn_pct = ((t2_price - buy_price) / buy_price) * 100 if buy_price > 0 else 0.0
+                t2_str = f"{t2_gewinn_eur:+.2f} € ({t2_gewinn_pct:+.2f}%)"
                 status_label = "✅ Vollständig verkauft"
             else:
                 # Bei aktuell laufendem Teilverkauf unrealisierten Gewinn für T2 ermitteln
@@ -884,21 +898,32 @@ with tab4:
                     curr_p = float(df_h["Close"].iloc[-1]) if not df_h.empty else buy_price
                 except Exception:
                     curr_p = buy_price
-                gewinn_t2 = (curr_p - buy_price) * half_shares
+                t2_gewinn_eur = (curr_p - buy_price) * half_shares
+                t2_gewinn_pct = ((curr_p - buy_price) / buy_price) * 100 if buy_price > 0 else 0.0
+                t2_str = f"{t2_gewinn_eur:+.2f} € ({t2_gewinn_pct:+.2f}%) (offen)"
                 status_label = "🟡 Teilverkauft (Rest aktiv)"
 
-            gesamt_gewinn_eur = gewinn_t1 + gewinn_t2
+            # --- GESAMTGEWINN ---
+            gesamt_gewinn_eur = t1_gewinn_eur + t2_gewinn_eur
             gesamt_gewinn_pct = (gesamt_gewinn_eur / einsatz) * 100 if einsatz > 0 else 0.0
+            gesamt_str = f"{gesamt_gewinn_eur:+.2f} € ({gesamt_gewinn_pct:+.2f}%)"
 
             historie_liste.append({
-                "Status": status_label,
-                "Name / Kürzel": f"{pos.get('name', pos['ticker'])} ({pos['ticker']})",
                 "ISIN": pos["isin"],
-                "Haltedauer": f"{days_held} Tage",
+                "Name / Ticker": f"{pos.get('name', pos['ticker'])} ({pos['ticker']})",
                 "Einsatz": f"{einsatz:.2f} €",
-                "Gewinn (€)": f"{gesamt_gewinn_eur:+.2f} €",
-                "Gewinn (%)": f"{gesamt_gewinn_pct:+.2f}%",
+                "Gewinn Tranche 1": t1_str,
+                "Gewinn Tranche 2": t2_str,
+                "Gesamtgewinn": gesamt_str,
+                "Haltedauer": f"{days_held} Tage",
+                "Verkaufsdatum": v_datum_str,
+                "Status": status_label,
             })
 
         df_hist = pd.DataFrame(historie_liste)
+
+        # Nach Verkaufsdatum absteigend sortieren
+        if "Verkaufsdatum" in df_hist.columns:
+            df_hist = df_hist.sort_values(by="Verkaufsdatum", ascending=False)
+
         st.dataframe(df_hist, use_container_width=True, hide_index=True)
