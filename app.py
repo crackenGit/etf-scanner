@@ -255,6 +255,19 @@ with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
         * **EMA50 > GD200:** Mittelfristiger Trend liegt über dem Langfristtrend.
         * **GD200 steigt an:** GD200 heute ist höher als der GD200 vor 10 Handelstagen (`GD200 v10T`).
     4. **Turnaround-Logik bestätigt:** Kein fallendes Messer!
+    
+    ### 🔄 Turnaround-Logik (Erholung vor dem Kauf)
+    Ein ETF mit **RSI < 35** ist erst dann ein **echtes Kaufsignal**, wenn der Verkaufsdruck nachlässt und Käufer in den Markt zurückkehren.
+    
+    Das Skript prüft automatisch zwei Wege:
+    
+    1. **Intraday-Turnaround (Einstieg am selben Tag):**
+       * Der RSI liegt aktuell **unter 35** **UND** der Kurs hat sich um mindestens **+0,5 % vom heutigen Tagestief erholt**.
+    
+    2. **Vortags-Turnaround (Klassischer V-Haken):**
+       * Der RSI lag **gestern bereits unter 35** **UND** der RSI ist heute höher als gestern (`RSI_heute > RSI_gestern`).
+    
+    *Solange keiner dieser beiden Fälle zutrifft, gilt der Wert als **'fallendes Messer'** und das Kaufsignal wird blockiert.*
     """)
 
 with st.expander("📊 Wie werden Kauf- & Verkaufstranchen gesetzt? (Regelwerk)", expanded=False):
