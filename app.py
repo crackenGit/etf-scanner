@@ -270,7 +270,7 @@ with st.expander("📊 Wie werden Kauf- & Verkaufstranchen gesetzt? (Regelwerk)"
     with col_t2:
         st.markdown("""
         ### 🎯 Tranche 2 (50 % Verkauf)
-        * **Ziel:** **52-Wochen-Hoch / ATH (-1 % Puffer)**.
+        * **Ziel:** **52-Wochen-Hoch (-1 % Puffer)**.
         * **Sinn:** Maximalziel für den Trend-Swing (1–3 Monate).
         """)
 
@@ -669,9 +669,9 @@ with tab3:
 
     for pos in aktive_positionen:
         try:
-            # NEU: Nutzung der zentralen Funktion über die ISIN (exakt wie in Tab 1 & 2)
+            # Zentrale Kursdaten über die ISIN beziehen
             data, ticker_used = berechne_indikatoren(pos["isin"])
-            
+
             if not data:
                 st.error(f"Keine Kursdaten für {pos['name']} ({pos['isin']}) verfügbar.")
                 continue
@@ -680,15 +680,20 @@ with tab3:
             rsi_today = data["rsi"]
             ema50_today = data["ema50"]
 
-            # ATH & ATH - 1% Berechnung (separat für ATH laden)
-            # Um das ATH der letzten 5 Jahre exakt zu bestimmen:
-            df_ath = yf.download(ticker_used, period="5y", progress=False)
-            if isinstance(df_ath.columns, pd.MultiIndex):
-                df_ath.columns = df_ath.columns.get_level_values(0)
-            
-            ath_price = float(df_ath["High"].max()) if "High" in df_ath else float(df_ath["Close"].max())
-            ath_target_price = ath_price * 0.99
-            dist_ath_pct = ((current_price - ath_target_price) / current_price) * 100
+            # 52-Wochen-Hoch & Tranche 2 Ziel (-1%)
+            df_52w = yf.download(ticker_used, period="1y", progress=False)
+            if isinstance(df_52w.columns, pd.MultiIndex):
+                df_52w.columns = df_52w.columns.get_level_values(0)
+
+            high_52w = (
+                float(df_52w["High"].max())
+                if "High" in df_52w
+                else float(df_52w["Close"].max())
+            )
+            ath_target_price = high_52w * 0.99
+            dist_ath_pct = (
+                (current_price - ath_target_price) / current_price
+            ) * 100
 
             is_partially_sold = pos.get("partially_sold", False)
             buy_price = float(pos["buy_price"])
@@ -699,7 +704,9 @@ with tab3:
             else:
                 stop_loss_limit = ema50_today
 
-            dist_stop_loss_pct = ((current_price - stop_loss_limit) / current_price) * 100
+            dist_stop_loss_pct = (
+                (current_price - stop_loss_limit) / current_price
+            ) * 100
 
             investment = buy_price * pos["shares"]
             current_value = current_price * pos["shares"]
@@ -709,7 +716,9 @@ with tab3:
             days_held = 0
             if pos.get("buy_date"):
                 buy_date = pd.to_datetime(pos["buy_date"])
-                today_date = pd.to_datetime(datetime.now().strftime("%Y-%m-%d"))
+                today_date = pd.to_datetime(
+                    datetime.now().strftime("%Y-%m-%d")
+                )
                 days_held = (today_date - buy_date).days
 
             # Signal-Logik
@@ -721,10 +730,13 @@ with tab3:
                     signal = (
                         "🎯 **TRANCHE 1 ERREICHT: Jetzt 50% VERKAUFEN!**\n\n"
                         "👉 In `portfolio.py` anpassen: `'partially_sold': True` &"
-                        f" `'t1_sell_date': '{today_str}'` & `'t1_sell_price': {current_price:.2f}`"
+                        f" `'t1_sell_date': '{today_str}'` &"
+                        f" `'t1_sell_price': {current_price:.2f}`"
                     )
                 else:
-                    dist_ema50_pct = ((current_price - ema50_today) / current_price) * 100
+                    dist_ema50_pct = (
+                        (current_price - ema50_today) / current_price
+                    ) * 100
                     signal = (
                         f"🟢 **100% IM DEPOT:** Warten auf Tranche 1 am EMA50 bei **{ema50_today:.2f} €** "
                         f"(Abstand: {dist_ema50_pct:+.2f}%)"
@@ -734,8 +746,8 @@ with tab3:
                     signal_type = "success"
                     today_str = datetime.now().strftime("%Y-%m-%d")
                     signal = (
-                        f"🚀 **TRANCHE 2 ZIEL (ATH -1%) ERREICHT!**\n\n"
-                        f"👉 ATH (5J) liegt bei {ath_price:.2f} € → Restliche 50% Verkaufen bei **{ath_target_price:.2f} €**!\n"
+                        f"🚀 **TRANCHE 2 ZIEL (52W-HOCH -1%) ERREICHT!**\n\n"
+                        f"👉 52-Wochen-Hoch liegt bei {high_52w:.2f} € → Restliche 50% Verkaufen bei **{ath_target_price:.2f} €**!\n"
                         f"👉 Nach Verkauf in `portfolio.py` eintragen: `'sold': True`, `'t2_sell_date': '{today_str}'`, `'t2_sell_price': {current_price:.2f}`"
                     )
                 elif current_price <= stop_loss_limit:
@@ -748,20 +760,25 @@ with tab3:
                     )
                 else:
                     signal = (
-                        f"🛡️ **2. HÄLFTE LÄUFT:** Warten auf ATH-Verkauf bei **{ath_target_price:.2f} €** "
+                        f"🛡️ **2. HÄLFTE LÄUFT:** Warten auf 52W-Hoch-Verkauf bei **{ath_target_price:.2f} €** "
                         f"oder Absicherung beim Tranche-1-Verkaufskurs bei **{stop_loss_limit:.2f} €**."
                     )
 
             # --- ANZEIGE IN CONTAINERN ---
             with st.container(border=True):
                 st.markdown(
-                    f"### {pos['name']} (`{ticker_used}`) — ISIN: `{pos['isin']}`"
+                    f"### {pos['name']} (`{ticker_used}`) — ISIN:"
+                    f" `{pos['isin']}`"
                 )
 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric(
                     "Depot-Status",
-                    "✅ 50% Verkauft" if is_partially_sold else "⏳ 100% Im Depot",
+                    (
+                        "✅ 50% Verkauft"
+                        if is_partially_sold
+                        else "⏳ 100% Im Depot"
+                    ),
                     f"{days_held} Tage gehalten",
                 )
                 c2.metric(
@@ -783,12 +800,14 @@ with tab3:
                 st.markdown("---")
 
                 t1, t2, t3 = st.columns(3)
-                
+
                 if is_partially_sold and pos.get("t1_sell_price"):
                     t1_price = float(pos["t1_sell_price"])
                     t1_profit_pct = ((t1_price - buy_price) / buy_price) * 100
-                    t1_profit_eur = (t1_price - buy_price) * (pos["shares"] / 2.0)
-                    
+                    t1_profit_eur = (t1_price - buy_price) * (
+                        pos["shares"] / 2.0
+                    )
+
                     t1.metric(
                         "Tranche 1 (Realisiert)",
                         f"{t1_price:.2f} €",
@@ -802,16 +821,19 @@ with tab3:
                     )
 
                 t2.metric(
-                    "Tranche 2: ATH 5J (Ziel: ATH -1%)",
+                    "Tranche 2: 52-Wochen-Hoch (Ziel: -1%)",
                     f"{ath_target_price:.2f} €",
-                    f"ATH: {ath_price:.2f} € ({dist_ath_pct:+.2f}%)",
+                    f"52W-Hoch: {high_52w:.2f} € ({dist_ath_pct:+.2f}%)",
                 )
-                
+
                 t3.metric(
                     "Tranche 2: Stop Loss Limit",
                     f"{stop_loss_limit:.2f} €",
                     f"Puffer: {dist_stop_loss_pct:+.2f}%",
-                    help="Verkaufskurs von Tranche 1 (vor Teilverkauf: Orientierung am EMA50)",
+                    help=(
+                        "Verkaufskurs von Tranche 1 (vor Teilverkauf:"
+                        " Orientierung am EMA50)"
+                    ),
                 )
 
                 if signal_type == "success":
@@ -829,7 +851,10 @@ with tab4:
     st.subheader("📜 History & Ausgewertete Trades")
 
     if not historie_positionen:
-        st.info("Noch keine Teilverkäufe oder abgeschlossenen Trades in der Historie vorhanden.")
+        st.info(
+            "Noch keine Teilverkäufe oder abgeschlossenen Trades in der Historie"
+            " vorhanden."
+        )
     else:
         historie_liste = []
         for pos in historie_positionen:
@@ -843,12 +868,16 @@ with tab4:
 
             # Verkaufsdatum (T2 Datum bei Vollverkauf, sonst T1 Datum)
             if is_sold:
-                v_datum_str = pos.get("t2_sell_date", pos.get("t1_sell_date", "-"))
+                v_datum_str = pos.get(
+                    "t2_sell_date", pos.get("t1_sell_date", "-")
+                )
             else:
                 v_datum_str = pos.get("t1_sell_date", "-")
 
             # Haltedauer Berechnung
-            buy_dt = pd.to_datetime(pos.get("buy_date", datetime.now().strftime("%Y-%m-%d")))
+            buy_dt = pd.to_datetime(
+                pos.get("buy_date", datetime.now().strftime("%Y-%m-%d"))
+            )
             if is_sold and pos.get("t2_sell_date"):
                 end_dt = pd.to_datetime(pos["t2_sell_date"])
             elif is_partially and pos.get("t1_sell_date"):
@@ -862,7 +891,11 @@ with tab4:
             if is_partially or is_sold:
                 t1_price = float(pos.get("t1_sell_price", buy_price))
                 t1_gewinn_eur = (t1_price - buy_price) * half_shares
-                t1_gewinn_pct = ((t1_price - buy_price) / buy_price) * 100 if buy_price > 0 else 0.0
+                t1_gewinn_pct = (
+                    ((t1_price - buy_price) / buy_price) * 100
+                    if buy_price > 0
+                    else 0.0
+                )
                 t1_str = f"{t1_gewinn_eur:+.2f} € ({t1_gewinn_pct:+.2f}%)"
             else:
                 t1_gewinn_eur = 0.0
@@ -872,7 +905,11 @@ with tab4:
             if is_sold:
                 t2_price = float(pos.get("t2_sell_price", buy_price))
                 t2_gewinn_eur = (t2_price - buy_price) * half_shares
-                t2_gewinn_pct = ((t2_price - buy_price) / buy_price) * 100 if buy_price > 0 else 0.0
+                t2_gewinn_pct = (
+                    ((t2_price - buy_price) / buy_price) * 100
+                    if buy_price > 0
+                    else 0.0
+                )
                 t2_str = f"{t2_gewinn_eur:+.2f} € ({t2_gewinn_pct:+.2f}%)"
                 status_label = "✅ Vollständig verkauft"
             else:
@@ -883,18 +920,28 @@ with tab4:
                 except Exception:
                     curr_p = buy_price
                 t2_gewinn_eur = (curr_p - buy_price) * half_shares
-                t2_gewinn_pct = ((curr_p - buy_price) / buy_price) * 100 if buy_price > 0 else 0.0
+                t2_gewinn_pct = (
+                    ((curr_p - buy_price) / buy_price) * 100
+                    if buy_price > 0
+                    else 0.0
+                )
                 t2_str = f"{t2_gewinn_eur:+.2f} € ({t2_gewinn_pct:+.2f}%) (offen)"
                 status_label = "🟡 Teilverkauft (Rest aktiv)"
 
             # --- GESAMTGEWINN ---
             gesamt_gewinn_eur = t1_gewinn_eur + t2_gewinn_eur
-            gesamt_gewinn_pct = (gesamt_gewinn_eur / einsatz) * 100 if einsatz > 0 else 0.0
-            gesamt_str = f"{gesamt_gewinn_eur:+.2f} € ({gesamt_gewinn_pct:+.2f}%)"
+            gesamt_gewinn_pct = (
+                (gesamt_gewinn_eur / einsatz) * 100 if einsatz > 0 else 0.0
+            )
+            gesamt_str = (
+                f"{gesamt_gewinn_eur:+.2f} € ({gesamt_gewinn_pct:+.2f}%)"
+            )
 
             historie_liste.append({
                 "ISIN": pos["isin"],
-                "Name / Ticker": f"{pos.get('name', pos['ticker'])} ({pos['ticker']})",
+                "Name / Ticker": (
+                    f"{pos.get('name', pos['ticker'])} ({pos['ticker']})"
+                ),
                 "Einsatz": f"{einsatz:.2f} €",
                 "Gesamtgewinn": gesamt_str,
                 "Gewinn Tranche 1": t1_str,
