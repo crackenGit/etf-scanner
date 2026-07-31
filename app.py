@@ -700,11 +700,18 @@ with tab3:
 
             # Stop-Loss Limit Festlegung (DYNAMISCH: Kaufkurs + 50% des T1-Gewinns)
             if is_partially_sold and pos.get("t1_sell_price"):
+                # Phase 2: T1 wurde realisiert
                 t1_price = float(pos["t1_sell_price"])
                 t1_profit = t1_price - buy_price
                 stop_loss_limit = buy_price + (t1_profit / 2.0)
+                sl_label = "Tranche 2: Stop Loss Limit"
             else:
-                stop_loss_limit = ema50_today
+                # Phase 1: T1 noch nicht verkauft -> Vorschau auf den SL bei T1-Verkauf am EMA50
+                if ema50_today > buy_price:
+                    stop_loss_limit = buy_price + ((ema50_today - buy_price) / 2.0)
+                else:
+                    stop_loss_limit = buy_price  # Fallback auf Kaufkurs (Einstand)
+                sl_label = "Tranche 2: Stop Loss (Vorschau)"
 
             dist_stop_loss_pct = (
                 (current_price - stop_loss_limit) / current_price
@@ -829,11 +836,11 @@ with tab3:
                 )
 
                 t3.metric(
-                    "Tranche 2: Stop Loss Limit",
+                    sl_label,
                     f"{stop_loss_limit:.2f} €",
                     f"Puffer: {dist_stop_loss_pct:+.2f}%",
                     help=(
-                        "Dynamischer Stop Loss: Kaufkurs + 50% des T1-Gewinns (vor Teilverkauf: Orientierung am EMA50)"
+                        "Dynamischer Stop Loss: Kaufkurs + 50% des T1-Gewinns (vor Teilverkauf als Vorschau berechnet)."
                     ),
                 )
 
