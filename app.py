@@ -244,6 +244,7 @@ def berechne_indikatoren(isin):
 # ==========================================
 st.title("📈 ETF Dip-Scanner & Portfolio-Manager")
 
+# --- ERKLÄRUNG DER TURNAROUND-LOGIK (VOLLSTÄNDIG) ---
 with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     st.markdown("""
     ### 🔄 Kriterien für ein Kaufsignal
@@ -253,6 +254,19 @@ with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
         * **EMA50 > GD200:** Mittelfristiger Trend liegt über dem Langfristtrend.
         * **GD200 steigt an:** GD200 heute ist höher als der GD200 vor 10 Handelstagen (`GD200 v10T`).
     4. **Turnaround-Logik bestätigt:** Kein fallendes Messer!
+    
+    ### 🔄 Turnaround-Logik (Erholung vor dem Kauf)
+    Ein ETF mit **RSI < 35** ist erst dann ein **echtes Kaufsignal**, wenn der Verkaufsdruck nachlässt und Käufer in den Markt zurückkehren.
+    
+    Das Skript prüft automatisch zwei Wege:
+    
+    1. **Intraday-Turnaround (Einstieg am selben Tag):**
+       * Der RSI liegt aktuell **unter 35** **UND** der Kurs hat sich um mindestens **+0,5 % vom heutigen Tagestief erholt**.
+    
+    2. **Vortags-Turnaround (Klassischer V-Haken):**
+       * Der RSI lag **gestern bereits unter 35** **UND** der RSI ist heute höher als gestern (`RSI_heute > RSI_gestern`).
+    
+    *Solange keiner dieser beiden Fälle zutrifft, gilt der Wert als **'fallendes Messer'** und das Kaufsignal wird blockiert.*
     """)
 
 if "letztes_update" in st.session_state:
@@ -671,6 +685,7 @@ with tab3:
             signal_type = "info"
             
             if not is_partially_sold:
+                # Tranche 1 noch NICHT erfolgt
                 if current_price >= ema50_today:
                     signal_type = "success"
                     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -679,12 +694,6 @@ with tab3:
                         "👉 In `portfolio.py` anpassen: `'partially_sold': True` &"
                         f" `'t1_sell_date': '{today_str}'` & `'t1_sell_price': {current_price:.2f}`"
                     )
-                elif current_price <= stop_loss_limit:
-                    signal_type = "error"
-                    signal = (
-                        f"🚨 **STOP LOSS UNTERSCHRITTEN!** Kurs ({current_price:.2f} €) liegt unter der"
-                        f" Absicherung von {stop_loss_limit:.2f} € (Zwischenkurs Kauf & T1-Ziel)."
-                    )
                 else:
                     dist_ema50_pct = ((current_price - ema50_today) / current_price) * 100
                     signal = (
@@ -692,18 +701,18 @@ with tab3:
                         f"(Abstand: {dist_ema50_pct:+.2f}%)"
                     )
             else:
-                # Logik für Tranche 2 nach Teilverkauf
+                # Tranche 1 BEREITS ERFOLGT -> Nur hier wird Tranche 2 & Stop-Loss ausgewertet
                 if current_price >= ath_target_price:
                     signal_type = "success"
                     signal = (
                         f"🚀 **TRANCHE 2 ZIEL (ATH -1%) ERREICHT!**\n\n"
-                        f"👉 ATH liegt bei {ath_price:.2f} € → Verkaufen bei **{ath_target_price:.2f} €**!"
+                        f"👉 ATH liegt bei {ath_price:.2f} € → Restliche 50% Verkaufen bei **{ath_target_price:.2f} €**!"
                     )
                 elif current_price <= stop_loss_limit:
                     signal_type = "error"
                     signal = (
-                        f"🚨 **TRANCHE 2 STOP LOSS GEGRIFFEN!**\n\n"
-                        f"Kurs ist unter den Zwischenkurs-Stop ({stop_loss_limit:.2f} €) gefallen. "
+                        f"🚨 **STOP LOSS UNTERSCHRITTEN!**\n\n"
+                        f"Kurs ({current_price:.2f} €) ist unter den Zwischenkurs-Stop ({stop_loss_limit:.2f} €) gefallen. "
                         f"Restliche 50% glattstellen zur Gewinnabsicherung!"
                     )
                 else:
@@ -718,7 +727,7 @@ with tab3:
                     f"### {pos['name']} (`{pos['ticker']}`) — ISIN: `{pos['isin']}`"
                 )
 
-                # Zeile 1: Basis-Kennzahlen
+                # Zeile 1: Basis-Kennzahlen + Aktueller RSI als 4. Element
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric(
                     "Depot-Status",
@@ -736,33 +745,33 @@ with tab3:
                     f"{profit_eur:+.2f} €",
                 )
                 c4.metric(
+                    "Aktueller RSI",
+                    f"{rsi_today:.1f}",
+                    f"EMA20: {ema20_today:.2f} €",
+                )
+
+                st.markdown("---")
+
+                # Zeile 2: Tranche 1 Ziel (vor Tranche 2 ATH platziert)
+                t1, t2, t3 = st.columns(3)
+                
+                t1.metric(
                     "Tranche 1 Ziel (EMA50)",
                     f"{ema50_today:.2f} €",
                     f"{((ema50_today - current_price) / current_price) * 100:+.2f}% zum Kurs",
                 )
 
-                st.markdown("---")
-
-                # Zeile 2: Tranche 2 & Absicherungs-Kennzahlen
-                t1, t2, t3 = st.columns(3)
-                
-                t1.metric(
+                t2.metric(
                     "Tranche 2: ATH (Ziel: ATH -1%)",
                     f"{ath_target_price:.2f} €",
                     f"ATH: {ath_price:.2f} € ({dist_ath_pct:+.2f}%)",
                 )
                 
-                t2.metric(
+                t3.metric(
                     "Tranche 2: Stop Loss Limit",
                     f"{stop_loss_limit:.2f} €",
                     f"Puffer: {dist_stop_loss_pct:+.2f}%",
                     help="Zwischenkurs aus Kaufkurs und Tranche-1 Verkaufskurs/Ziel"
-                )
-
-                t3.metric(
-                    "Aktueller RSI",
-                    f"{rsi_today:.1f}",
-                    f"EMA20: {ema20_today:.2f} €"
                 )
 
                 # Signal-Box
