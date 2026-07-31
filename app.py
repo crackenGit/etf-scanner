@@ -271,7 +271,7 @@ with st.expander("📊 Wie werden Kauf- & Verkaufstranchen gesetzt? (Regelwerk)"
         st.markdown("""
         ### 🎯 Tranche 2 (50 % Verkauf)
         * **Ziel:** **52-Wochen-Hoch (-1 % Puffer)**.
-        * **Sinn:** Maximalziel für den Trend-Swing (1–3 Monate).
+        * **Absicherung:** Dynamic Stop Loss bei **Kaufkurs + 50 % des T1-Gewinns** (garantiertes Plus + maximaler Atempuffer).
         """)
 
 if "letztes_update" in st.session_state:
@@ -698,9 +698,11 @@ with tab3:
             is_partially_sold = pos.get("partially_sold", False)
             buy_price = float(pos["buy_price"])
 
-            # Stop-Loss Limit Festlegung
+            # Stop-Loss Limit Festlegung (DYNAMISCH: Kaufkurs + 50% des T1-Gewinns)
             if is_partially_sold and pos.get("t1_sell_price"):
-                stop_loss_limit = float(pos["t1_sell_price"])
+                t1_price = float(pos["t1_sell_price"])
+                t1_profit = t1_price - buy_price
+                stop_loss_limit = buy_price + (t1_profit / 2.0)
             else:
                 stop_loss_limit = ema50_today
 
@@ -754,14 +756,14 @@ with tab3:
                     signal_type = "error"
                     today_str = datetime.now().strftime("%Y-%m-%d")
                     signal = (
-                        f"🚨 **STOP LOSS UNTERSCHRITTEN!**\n\n"
-                        f"Kurs ({current_price:.2f} €) ist unter den Tranche-1-Verkaufskurs ({stop_loss_limit:.2f} €) gefallen.\n"
+                        f"🚨 **DYNAMISCHER STOP LOSS UNTERSCHRITTEN!**\n\n"
+                        f"Kurs ({current_price:.2f} €) ist unter die 50%-Gewinn-Absicherung ({stop_loss_limit:.2f} €) gefallen.\n"
                         f"Restliche 50% glattstellen! In `portfolio.py` eintragen: `'sold': True`, `'t2_sell_date': '{today_str}'`, `'t2_sell_price': {current_price:.2f}`"
                     )
                 else:
                     signal = (
                         f"🛡️ **2. HÄLFTE LÄUFT:** Warten auf 52W-Hoch-Verkauf bei **{ath_target_price:.2f} €** "
-                        f"oder Absicherung beim Tranche-1-Verkaufskurs bei **{stop_loss_limit:.2f} €**."
+                        f"oder Absicherung beim dynamischen Stop-Loss (50% T1-Gewinn) bei **{stop_loss_limit:.2f} €**."
                     )
 
             # --- ANZEIGE IN CONTAINERN ---
@@ -831,8 +833,7 @@ with tab3:
                     f"{stop_loss_limit:.2f} €",
                     f"Puffer: {dist_stop_loss_pct:+.2f}%",
                     help=(
-                        "Verkaufskurs von Tranche 1 (vor Teilverkauf:"
-                        " Orientierung am EMA50)"
+                        "Dynamischer Stop Loss: Kaufkurs + 50% des T1-Gewinns (vor Teilverkauf: Orientierung am EMA50)"
                     ),
                 )
 
