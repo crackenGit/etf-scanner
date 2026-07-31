@@ -165,26 +165,15 @@ def berechne_indikatoren(isin):
 
     close = data["Close"].dropna()
     low = data["Low"].dropna() if "Low" in data else close
-    high = data["High"].dropna() if "High" in data else close
-
     gd200 = close.rolling(window=200).mean()
     ema50 = close.ewm(span=50, adjust=False).mean()
 
-    # RSI 14
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -1 * delta.clip(upper=0)
     avg_gain = gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
     rsi = 100 - (100 / (1 + (avg_gain / avg_loss)))
-
-    # ATR 14 (Average True Range)
-    high_low = high - low
-    high_close = (high - close.shift()).abs()
-    low_close = (low - close.shift()).abs()
-    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    atr14 = true_range.rolling(window=14).mean()
-    atr_today = float(atr14.iloc[-1]) if not atr14.empty else 0.0
 
     ag_today = float(avg_gain.iloc[-1])
     al_today = float(avg_loss.iloc[-1])
@@ -237,10 +226,6 @@ def berechne_indikatoren(isin):
         rsi_score + ema50_score + rsi35_proximity_score + gd200_score, 1
     )
 
-    # 52-Wochen-Hoch (ca. 252 Handelstage)
-    df_1y = data.tail(252)
-    high_52w = float(df_1y["High"].max()) if "High" in df_1y else c_today
-
     return {
         "close": c_today,
         "rsi": rsi_today,
@@ -248,8 +233,6 @@ def berechne_indikatoren(isin):
         "gd200": gd200_heute,
         "gd200_vor_10d": gd200_vor_10d,
         "ema50": ema50_heute,
-        "atr14": atr_today,
-        "high_52w": high_52w,
         "gd200_steigt": gd200_steigt,
         "perf_1w": perf_1w,
         "dip_score": dip_score,
@@ -263,7 +246,7 @@ def berechne_indikatoren(isin):
 # ==========================================
 st.title("📈 ETF Dip-Scanner & Portfolio-Manager")
 
-# --- ERKLÄRUNG DER TURNAROUND-LOGIK & REGELWERK ---
+# --- ERKLÄRUNG DER TURNAROUND-LOGIK ---
 with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     st.markdown("""
     ### 🔄 Kriterien für ein Kaufsignal
@@ -288,7 +271,7 @@ with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     *Solange keiner dieser beiden Fälle zutrifft, gilt der Wert als **'fallendes Messer'** und das Kaufsignal wird blockiert.*
     """)
 
-# --- NEU: ERKLÄRBLOCK FÜR VERKAUFSTRANCHEN & ATR-STOP ---
+# --- EXPLANANDER FÜR VERKAUFSTRANCHEN & ABSICHERUNG ---
 with st.expander("📊 Wie werden Kauf- & Verkaufstranchen gesetzt? (Regelwerk)", expanded=False):
     col_t1, col_t2 = st.columns(2)
     
@@ -296,29 +279,23 @@ with st.expander("📊 Wie werden Kauf- & Verkaufstranchen gesetzt? (Regelwerk)"
         st.markdown("""
         ### 🟢 Tranche 1 (50 % Verkauf)
         * **Ziel:** Erreichen der **EMA50-Linie** (Mean Reversion).
-        * **Sinn:** Schnelle Teilgewinnmitnahme nach dem Dip, um das Risiko des Gesamtrades sofort drastisch zu reduzieren.
+        * **Sinn:** Schnelle Teilgewinnmitnahme nach dem Dip zur Risiko-Reduzierung.
         """)
         
     with col_t2:
         st.markdown("""
         ### 🎯 Tranche 2 (50 % Verkauf)
-        * **Ziel:** **52-Wochen-Hoch (-1 % Puffer)**.
-        * **Sinn:** Realistisches Maximalziel für einen 1–3 Monats-Swing-Trade in volatilen Sektoren.
+        * **Ziel:** **52-Wochen-Hoch / ATH (-1 % Puffer)**.
+        * **Sinn:** Maximalziel für den Trend-Swing (1–3 Monate).
         """)
         
     st.divider()
     
     st.markdown("""
-    ### 🛡️ Die Absicherung: Der ATR-Stop Loss
-    Nach dem Verkauf von Tranche 1 wird die verbleibende Position dynamisch über die **Average True Range (ATR)** abgesichert:
-    
-    $$\\text{Stop-Loss} = \\text{Aktueller Kurs / Höchstkurs} - (2 \\times \\text{ATR}_{14})$$
-    
-    * **Was ist die ATR?** Die ATR misst die durchschnittliche tägliche Schwankungsbreite (Volatilität) der letzten 14 Handelstage.
-    * **Warum ATR statt starrer Stoppkurs?** 
-      * Bei **stark schwankenden ETFs** erweitert sich der Stopp automatisch, um nicht durch normales Marktrauschen (*Shakeout*) herausgeworfen zu werden.
-      * Bei **ruhigeren ETFs** zieht der Stopp enger an, um erzielte Gewinne konsequent zu sichern.
-      * Der Stopp zieht bei neuen Höchstkursen **automatisch nach oben mit** (*Trailing Stop*).
+    ### 🛡️ Tranche 2 Stop Loss (Gewinnabsicherung)
+    * **Vor Tranche-1-Verkauf:** Zeigt zur Orientierung das erste Ziel (**EMA50**).
+    * **Nach Tranche-1-Verkauf:** Das Stop-Loss-Limit wechselt fix auf den **tatsächlichen Verkaufskurs von Tranche 1**.
+    * **Vorteil:** Sobald Tranche 1 im Gewinn realisiert ist, sichert dieser Stop den erzielten Preis standfest ab.
     """)
 
 if "letztes_update" in st.session_state:
@@ -358,7 +335,6 @@ if "kauf_signale" not in st.session_state:
         data, ticker = berechne_indikatoren(item["isin"])
         return item, data, ticker
 
-    # Parallelisierung mit bis zu 8 Threads
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = [executor.submit(load_etf_data, item) for item in etfs]
 
@@ -382,15 +358,13 @@ if "kauf_signale" not in st.session_state:
             if data.get("yahoo_zeit") and data["yahoo_zeit"] != "k.A.":
                 letzter_zeitstempel = data["yahoo_zeit"]
 
-            c, rsi, rsi35, gd200, gd200_10d, ema50, atr14, high_52w, gd200_steigt, perf_1w, score, messer = (
+            c, rsi, rsi35, gd200, gd200_10d, ema50, gd200_steigt, perf_1w, score, messer = (
                 data["close"],
                 data["rsi"],
                 data["rsi35_preis"],
                 data["gd200"],
                 data["gd200_vor_10d"],
                 data["ema50"],
-                data["atr14"],
-                data["high_52w"],
                 data["gd200_steigt"],
                 data["perf_1w"],
                 data["dip_score"],
@@ -420,8 +394,6 @@ if "kauf_signale" not in st.session_state:
                 "GD200_10d_Abstand": gd200_10d_abstand,
                 "GD200_steigt": gd200_steigt,
                 "EMA50": ema50,
-                "ATR14": atr14,
-                "High_52W": high_52w,
                 "1W Perf.": perf_1w,
                 "Dip Score": score,
                 "Zeitstempel": data["yahoo_zeit"],
@@ -733,33 +705,28 @@ with tab3:
             df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
             df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
 
-            # ATR 14 Berechnen
-            high = df["High"] if "High" in df else df["Close"]
-            low = df["Low"] if "Low" in df else df["Close"]
-            high_low = high - low
-            high_close = (high - df["Close"].shift()).abs()
-            low_close = (low - df["Close"].shift()).abs()
-            true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-            df["ATR"] = true_range.rolling(window=14).mean()
-
             current_price = float(df["Close"].iloc[-1])
             rsi_today = float(df["RSI"].iloc[-1])
             ema50_today = float(df["EMA50"].iloc[-1])
             ema20_today = float(df["EMA20"].iloc[-1])
-            atr_today = float(df["ATR"].iloc[-1])
 
-            # 52-Wochen-Hoch (1 Jahr = ca. 252 Handelstage)
-            df_1y = df.tail(252)
-            high_52w = float(df_1y["High"].max()) if "High" in df_1y else float(df_1y["Close"].max())
-            t2_target_price = high_52w * 0.99
-            dist_52w_pct = ((current_price - t2_target_price) / current_price) * 100
+            # ATH & ATH - 1% Berechnung auf Basis der letzten 5 Jahre
+            ath_price = float(df["High"].max()) if "High" in df else float(df["Close"].max())
+            ath_target_price = ath_price * 0.99
+            dist_ath_pct = ((current_price - ath_target_price) / current_price) * 100
 
             is_partially_sold = pos.get("partially_sold", False)
             buy_price = float(pos["buy_price"])
 
-            # NEU: Dynamic ATR-Stop Loss (2x ATR Abstand vom aktuellen Kurs)
-            atr_stop_loss = current_price - (2.0 * atr_today)
-            dist_stop_loss_pct = ((current_price - atr_stop_loss) / current_price) * 100
+            # ANPASSUNG: Stop-Loss Limit
+            # Wenn Tranche 1 noch NICHT erfolgt: EMA50 als Ziel/Prognose anzeigen
+            # Wenn Tranche 1 ERFOLGT ist: Tatsächlicher Verkaufskurs von Tranche 1
+            if is_partially_sold and pos.get("t1_sell_price"):
+                stop_loss_limit = float(pos["t1_sell_price"])
+            else:
+                stop_loss_limit = ema50_today
+
+            dist_stop_loss_pct = ((current_price - stop_loss_limit) / current_price) * 100
 
             investment = buy_price * pos["shares"]
             current_value = current_price * pos["shares"]
@@ -792,24 +759,24 @@ with tab3:
                         f"(Abstand: {dist_ema50_pct:+.2f}%)"
                     )
             else:
-                # Tranche 1 BEREITS ERFOLGT -> Nur hier wird Tranche 2 (52W-Hoch) & ATR-Stop ausgewertet
-                if current_price >= t2_target_price:
+                # Tranche 1 BEREITS ERFOLGT -> Tranche 2 & Tranche 1 Verkaufskurs-Stop
+                if current_price >= ath_target_price:
                     signal_type = "success"
                     signal = (
-                        f"🚀 **TRANCHE 2 ZIEL (52W-Hoch -1%) ERREICHT!**\n\n"
-                        f"👉 52W-Hoch liegt bei {high_52w:.2f} € → Restliche 50% Verkaufen bei **{t2_target_price:.2f} €**!"
+                        f"🚀 **TRANCHE 2 ZIEL (ATH -1%) ERREICHT!**\n\n"
+                        f"👉 ATH (5J) liegt bei {ath_price:.2f} € → Restliche 50% Verkaufen bei **{ath_target_price:.2f} €**!"
                     )
-                elif current_price <= atr_stop_loss:
+                elif current_price <= stop_loss_limit:
                     signal_type = "error"
                     signal = (
-                        f"🚨 **ATR-STOP LOSS UNTERSCHRITTEN!**\n\n"
-                        f"Kurs ({current_price:.2f} €) ist unter den dynamischen ATR-Stop ({atr_stop_loss:.2f} €) gefallen. "
+                        f"🚨 **STOP LOSS UNTERSCHRITTEN!**\n\n"
+                        f"Kurs ({current_price:.2f} €) ist unter den Tranche-1-Verkaufskurs ({stop_loss_limit:.2f} €) gefallen. "
                         f"Restliche 50% glattstellen zur Gewinnabsicherung!"
                     )
                 else:
                     signal = (
-                        f"🛡️ **2. HÄLFTE LÄUFT:** Warten auf 52W-Hoch-Verkauf bei **{t2_target_price:.2f} €** "
-                        f"oder Absicherung via ATR-Stop bei **{atr_stop_loss:.2f} €**."
+                        f"🛡️ **2. HÄLFTE LÄUFT:** Warten auf ATH-Verkauf bei **{ath_target_price:.2f} €** "
+                        f"oder Absicherung beim Tranche-1-Verkaufskurs bei **{stop_loss_limit:.2f} €**."
                     )
 
             # --- ANZEIGE IN CONTAINERN ---
@@ -836,14 +803,14 @@ with tab3:
                     f"{profit_eur:+.2f} €",
                 )
                 c4.metric(
-                    "Aktueller RSI / ATR",
-                    f"RSI: {rsi_today:.1f}",
-                    f"ATR(14): {atr_today:.2f} €",
+                    "Aktueller RSI",
+                    f"{rsi_today:.1f}",
+                    f"EMA20: {ema20_today:.2f} €",
                 )
 
                 st.markdown("---")
 
-                # Zeile 2: Tranche 1 Ziel, Tranche 2 (52W-Hoch), ATR-Stop Loss
+                # Zeile 2: Tranche 1 Ziel, Tranche 2 ATH, Stop Loss (Tranche 1 Verkaufskurs)
                 t1, t2, t3 = st.columns(3)
                 
                 t1.metric(
@@ -853,16 +820,16 @@ with tab3:
                 )
 
                 t2.metric(
-                    "Tranche 2: 52W-Hoch (Ziel: -1%)",
-                    f"{t2_target_price:.2f} €",
-                    f"52W-Hoch: {high_52w:.2f} € ({dist_52w_pct:+.2f}%)",
+                    "Tranche 2: ATH 5J (Ziel: ATH -1%)",
+                    f"{ath_target_price:.2f} €",
+                    f"ATH: {ath_price:.2f} € ({dist_ath_pct:+.2f}%)",
                 )
                 
                 t3.metric(
-                    "Tranche 2: ATR-Stop Loss (2x ATR)",
-                    f"{atr_stop_loss:.2f} €",
-                    f"Puffer: -{(2.0 * atr_today):.2f} € ({((atr_stop_loss - current_price) / current_price) * 100:+.2f}%)",
-                    help="Dynamischer Trailing-Stop: Aktueller Kurs minus 2x ATR(14) Volatilität"
+                    "Tranche 2: Stop Loss Limit",
+                    f"{stop_loss_limit:.2f} €",
+                    f"Puffer: {dist_stop_loss_pct:+.2f}%",
+                    help="Verkaufskurs von Tranche 1 (vor Teilverkauf: Orientierung am EMA50)",
                 )
 
                 # Signal-Box
