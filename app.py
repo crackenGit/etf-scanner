@@ -290,7 +290,7 @@ if st.sidebar.button("🔄 Daten aktualisieren", use_container_width=True):
 
 etfs = parse_isin_file("isin.txt")
 
-portfolio_isins = [p["isin"] for p in PORTFOLIO]
+portfolio_isins = [p["isin"] for p in PORTFOLIO if not p.get("sold", False)]
 etfs_isins = {e["isin"] for e in etfs}
 for p in PORTFOLIO:
     if p["isin"] not in etfs_isins:
