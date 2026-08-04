@@ -28,9 +28,9 @@ PORTFOLIO = [
         "buy_date": "2026-07-29",
         "buy_price": 15.24,
         "shares": 33,
-        "partially_sold": False,  # True setzen, sobald Tranche 1 verkauft wurde
-        "t1_sell_date": None,     # Datum von Teilverkauf 1 (z. B. '2026-07-15')
-        "t1_sell_price": None,    # Tatsächlicher Verkaufskurs von T1
+        "partially_sold": True,  # True setzen, sobald Tranche 1 verkauft wurde
+        "t1_sell_date": "2026-08-04",     # Datum von Teilverkauf 1 (z. B. '2026-07-15')
+        "t1_sell_price": 17.61,    # Tatsächlicher Verkaufskurs von T1
         "sold": False,  # True setzen, sobald Tranche 2 verkauft wurde
         "t2_sell_date": None,     # Datum von Teilverkauf 2 (z. B. '2026-07-15')
         "t2_sell_price": None,    # Tatsächlicher Verkaufskurs von T2 
