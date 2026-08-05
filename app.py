@@ -1013,14 +1013,14 @@ with tab4:
             df_hist = df_hist.sort_values(by="Verkaufsdatum", ascending=False)
 
         # -------------------------------------------------------------
-        # FARBLICHE STYLING-FUNKTION FÜR GEWINN-SPALTEN
+        # HEATMAP STYLING (2,5 % SCHRITTE)
         # -------------------------------------------------------------
         def style_historie_table(df):
             styles = pd.DataFrame("", index=df.index, columns=df.columns)
             target_cols = ["Gesamtgewinn", "Gewinn Tranche 1", "Gewinn Tranche 2"]
 
             def get_color_style(val_str):
-                if not isinstance(val_str, str) or val_str.strip() == "-":
+                if not isinstance(val_str, str) or val_str.strip() in ["-", "- "]:
                     return ""
 
                 match = re.search(r"\(([\+\-]?\d+(?:\.\d+)?)\%\)", val_str)
@@ -1029,16 +1029,37 @@ with tab4:
 
                 pct = float(match.group(1))
 
-                if pct < 0:
-                    return "background-color: #f8d7da; color: #721c24; font-weight: bold;"
-                elif 0 <= pct < 5:
-                    return "background-color: #d4edda; color: #155724; font-weight: bold;"
-                elif 5 <= pct < 10:
-                    return "background-color: #a2d9ce; color: #0e6251; font-weight: bold;"
-                elif 10 <= pct < 20:
-                    return "background-color: #27ae60; color: #ffffff; font-weight: bold;"
-                else:  # >= 20%
-                    return "background-color: #1e8449; color: #ffffff; font-weight: bold;"
+                # --- NEGATIV-BEREICHE (Sanfte Rot-Töne) ---
+                if pct < -10.0:
+                    return "background-color: #f1948a; color: #78281f; font-weight: bold;"
+                elif -10.0 <= pct < -7.5:
+                    return "background-color: #f5b7b1; color: #78281f; font-weight: bold;"
+                elif -7.5 <= pct < -5.0:
+                    return "background-color: #fadbd8; color: #78281f; font-weight: bold;"
+                elif -5.0 <= pct < -2.5:
+                    return "background-color: #fdedec; color: #78281f; font-weight: bold;"
+                elif -2.5 <= pct < 0.0:
+                    return "background-color: #fdf2e9; color: #78281f; font-weight: bold;"
+
+                # --- POSITIV-BEREICHE (Heatmap in 2,5 % Schritten) ---
+                elif 0.0 <= pct < 2.5:
+                    return "background-color: #e9f7ef; color: #145a32; font-weight: bold;"  # Sehr zartes Pastellgrün
+                elif 2.5 <= pct < 5.0:
+                    return "background-color: #d4efdf; color: #145a32; font-weight: bold;"  # Mildes Hellgrün
+                elif 5.0 <= pct < 7.5:
+                    return "background-color: #a9dfbf; color: #145a32; font-weight: bold;"  # Softes Mittelgrün
+                elif 7.5 <= pct < 10.0:
+                    return "background-color: #7dcea0; color: #114b2a; font-weight: bold;"  # Frisches Grün
+                elif 10.0 <= pct < 12.5:
+                    return "background-color: #52be80; color: #ffffff; font-weight: bold;"  # Sattes Grün
+                elif 12.5 <= pct < 15.0:
+                    return "background-color: #27ae60; color: #ffffff; font-weight: bold;"  # Kräftiges Grün
+                elif 15.0 <= pct < 17.5:
+                    return "background-color: #229954; color: #ffffff; font-weight: bold;"  # Dunkelgrün
+                elif 17.5 <= pct < 20.0:
+                    return "background-color: #1e8449; color: #ffffff; font-weight: bold;"  # Sehr dunkel
+                else:  # >= 20.0 %
+                    return "background-color: #145a32; color: #ffffff; font-weight: bold;"  # Tiefes Waldgrün
 
             for col in target_cols:
                 if col in df.columns:
