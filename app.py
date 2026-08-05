@@ -981,7 +981,7 @@ with tab4:
 
                 gesamt_gewinn_eur = t1_gewinn_eur
                 gesamt_gewinn_pct = t1_gewinn_pct  # %Gewinn entspricht exakt T1
-                gesamt_str = f"{gesamt_gewinn_eur:+.2f} € ({gesamt_gewinn_pct:+.2f}%) (Teilgewinn)"
+                gesamt_str = f"{gesamt_gewinn_eur:+.2f} € ({gesamt_gewinn_pct:+.2f}%)"
 
                 status_label = "🟡 Teilverkauft (Rest aktiv)"
                 v_datum_str = pos.get("t1_sell_date", "-")
