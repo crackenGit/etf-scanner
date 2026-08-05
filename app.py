@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import logging
 import warnings
+import re
 import pandas as pd
 import requests
 import streamlit as st
@@ -902,7 +903,6 @@ with tab4:
             # -------------------------------------------------------------
             if is_sold and has_t1 and not has_t2:
                 t1_price = float(pos["t1_sell_price"])
-                # 100% der Position wurden in einer Order verkauft
                 t1_gewinn_eur = (t1_price - buy_price) * shares
                 t1_gewinn_pct = (
                     ((t1_price - buy_price) / buy_price) * 100
@@ -914,9 +914,7 @@ with tab4:
                 t2_str = "- "  # Bleibt leer bei Direkt-Komplettverkauf
 
                 gesamt_gewinn_eur = t1_gewinn_eur
-                gesamt_gewinn_pct = (
-                    (gesamt_gewinn_eur / einsatz) * 100 if einsatz > 0 else 0.0
-                )
+                gesamt_gewinn_pct = t1_gewinn_pct
                 gesamt_str = f"{gesamt_gewinn_eur:+.2f} € ({gesamt_gewinn_pct:+.2f}%)"
 
                 status_label = "✅ Vollständig verkauft"
@@ -967,7 +965,7 @@ with tab4:
                 )
 
             # -------------------------------------------------------------
-            # FALL 3: Laufender Teilverkauf (T1 realisiert, Rest/T2 noch offen)
+            # FALL 3: Laufender Teilverkauf (T1 realisiert, Rest noch aktiv)
             # -------------------------------------------------------------
             else:
                 t1_price = float(pos.get("t1_sell_price", buy_price))
@@ -982,9 +980,7 @@ with tab4:
                 t2_str = "- "  # Bleibt leer, da T2 noch aktiv ist
 
                 gesamt_gewinn_eur = t1_gewinn_eur
-                gesamt_gewinn_pct = (
-                    (gesamt_gewinn_eur / einsatz) * 100 if einsatz > 0 else 0.0
-                )
+                gesamt_gewinn_pct = t1_gewinn_pct  # %Gewinn entspricht exakt T1
                 gesamt_str = f"{gesamt_gewinn_eur:+.2f} € ({gesamt_gewinn_pct:+.2f}%) (Teilgewinn)"
 
                 status_label = "🟡 Teilverkauft (Rest aktiv)"
@@ -1013,8 +1009,42 @@ with tab4:
 
         df_hist = pd.DataFrame(historie_liste)
 
-        # Nach Verkaufsdatum absteigend sortieren
         if "Verkaufsdatum" in df_hist.columns:
             df_hist = df_hist.sort_values(by="Verkaufsdatum", ascending=False)
 
-        st.dataframe(df_hist, use_container_width=True, hide_index=True)
+        # -------------------------------------------------------------
+        # FARBLICHE STYLING-FUNKTION FÜR GEWINN-SPALTEN
+        # -------------------------------------------------------------
+        def style_historie_table(df):
+            styles = pd.DataFrame("", index=df.index, columns=df.columns)
+            target_cols = ["Gesamtgewinn", "Gewinn Tranche 1", "Gewinn Tranche 2"]
+
+            def get_color_style(val_str):
+                if not isinstance(val_str, str) or val_str.strip() == "-":
+                    return ""
+
+                match = re.search(r"\(([\+\-]?\d+(?:\.\d+)?)\%\)", val_str)
+                if not match:
+                    return ""
+
+                pct = float(match.group(1))
+
+                if pct < 0:
+                    return "background-color: #f8d7da; color: #721c24; font-weight: bold;"
+                elif 0 <= pct < 5:
+                    return "background-color: #d4edda; color: #155724; font-weight: bold;"
+                elif 5 <= pct < 10:
+                    return "background-color: #a2d9ce; color: #0e6251; font-weight: bold;"
+                elif 10 <= pct < 20:
+                    return "background-color: #27ae60; color: #ffffff; font-weight: bold;"
+                else:  # >= 20%
+                    return "background-color: #1e8449; color: #ffffff; font-weight: bold;"
+
+            for col in target_cols:
+                if col in df.columns:
+                    styles[col] = df[col].apply(get_color_style)
+
+            return styles
+
+        styled_df_hist = df_hist.style.apply(style_historie_table, axis=None)
+        st.dataframe(styled_df_hist, use_container_width=True, hide_index=True)
