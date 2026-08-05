@@ -7,6 +7,10 @@ import requests
 import streamlit as st
 import yfinance as yf
 
+import importlib
+import portfolio
+importlib.reload(portfolio)  # Zwingt Python, portfolio.py bei jedem Rerun neu zu lesen
+
 # Externe Portfolio- und PIN-Datei importieren
 from portfolio import DEINE_PIN, PORTFOLIO
 
