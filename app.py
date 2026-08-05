@@ -98,6 +98,7 @@ def parse_isin_file(filename="isin.txt"):
     return etf_liste
 
 
+@st.cache_data(ttl=86400)  # 24h Caching zur Vermeidung von Rate Limits
 def isin_zu_ticker(isin):
     url = f"https://query2.finance.yahoo.com/v1/finance/search?q={isin}"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -171,6 +172,11 @@ def berechne_indikatoren(isin):
 
     close = data["Close"].dropna()
     low = data["Low"].dropna() if "Low" in data else close
+    high = data["High"].dropna() if "High" in data else close
+
+    # 52-Wochen-Hoch (ca. 252 Handelstage)
+    high_52w = float(high.tail(252).max()) if len(high) >= 252 else float(high.max())
+
     gd200 = close.rolling(window=200).mean()
     ema50 = close.ewm(span=50, adjust=False).mean()
 
@@ -239,6 +245,7 @@ def berechne_indikatoren(isin):
         "gd200": gd200_heute,
         "gd200_vor_10d": gd200_vor_10d,
         "ema50": ema50_heute,
+        "high_52w": high_52w,
         "gd200_steigt": gd200_steigt,
         "perf_1w": perf_1w,
         "dip_score": dip_score,
@@ -698,17 +705,9 @@ with tab3:
             current_price = data["close"]
             rsi_today = data["rsi"]
             ema50_today = data["ema50"]
+            high_52w = data["high_52w"]  # Direkt aus data nutzen
 
             # 52-Wochen-Hoch & Tranche 2 Ziel (-1%)
-            df_52w = yf.download(ticker_used, period="1y", progress=False)
-            if isinstance(df_52w.columns, pd.MultiIndex):
-                df_52w.columns = df_52w.columns.get_level_values(0)
-
-            high_52w = (
-                float(df_52w["High"].max())
-                if "High" in df_52w
-                else float(df_52w["Close"].max())
-            )
             ath_target_price = high_52w * 0.99
             dist_ath_pct = (
                 (current_price - ath_target_price) / current_price
@@ -1044,23 +1043,23 @@ with tab4:
 
                 # --- POSITIV-BEREICHE (Helle Mint- & Pastell-Töne) ---
                 elif 0.0 <= pct < 2.5:
-                    return "background-color: #f4fbf7; color: #0e3a1d; font-weight: bold;"  # Hauch von Grün
+                    return "background-color: #f4fbf7; color: #0e3a1d; font-weight: bold;"
                 elif 2.5 <= pct < 5.0:
-                    return "background-color: #e4f6ec; color: #0e3a1d; font-weight: bold;"  # Sehr zartes Mint
+                    return "background-color: #e4f6ec; color: #0e3a1d; font-weight: bold;"
                 elif 5.0 <= pct < 7.5:
-                    return "background-color: #d1f0df; color: #0e3a1d; font-weight: bold;"  # Softes Mint
+                    return "background-color: #d1f0df; color: #0e3a1d; font-weight: bold;"
                 elif 7.5 <= pct < 10.0:
-                    return "background-color: #bce9d1; color: #0e3a1d; font-weight: bold;"  # Helles Pastellgrün
+                    return "background-color: #bce9d1; color: #0e3a1d; font-weight: bold;"
                 elif 10.0 <= pct < 12.5:
-                    return "background-color: #a5e1c2; color: #082813; font-weight: bold;"  # Frisches Mint
+                    return "background-color: #a5e1c2; color: #082813; font-weight: bold;"
                 elif 12.5 <= pct < 15.0:
-                    return "background-color: #8ed8b2; color: #082813; font-weight: bold;"  # Milder Grün-Ton
+                    return "background-color: #8ed8b2; color: #082813; font-weight: bold;"
                 elif 15.0 <= pct < 17.5:
-                    return "background-color: #76cea1; color: #082813; font-weight: bold;"  # Helligkeits-Stufe 7
+                    return "background-color: #76cea1; color: #082813; font-weight: bold;"
                 elif 17.5 <= pct < 20.0:
-                    return "background-color: #5ec38f; color: #04190b; font-weight: bold;"  # Kräftigeres Hellgrün
+                    return "background-color: #5ec38f; color: #04190b; font-weight: bold;"
                 else:  # >= 20.0 %
-                    return "background-color: #45b77d; color: #04190b; font-weight: bold;"  # Maximaler Pastell-Green-Wert
+                    return "background-color: #45b77d; color: #04190b; font-weight: bold;"
 
             for col in target_cols:
                 if col in df.columns:
