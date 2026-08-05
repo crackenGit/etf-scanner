@@ -1013,7 +1013,7 @@ with tab4:
             df_hist = df_hist.sort_values(by="Verkaufsdatum", ascending=False)
 
         # -------------------------------------------------------------
-        # HEATMAP STYLING (2,5 % SCHRITTE)
+        # PASTELL HEATMAP STYLING (HELL & SOFT, 2,5 % SCHRITTE)
         # -------------------------------------------------------------
         def style_historie_table(df):
             styles = pd.DataFrame("", index=df.index, columns=df.columns)
@@ -1029,37 +1029,37 @@ with tab4:
 
                 pct = float(match.group(1))
 
-                # --- NEGATIV-BEREICHE (Sanfte Rot-Töne) ---
+                # --- NEGATIV-BEREICHE (Sehr softe Rot/Rosa-Töne) ---
                 if pct < -10.0:
-                    return "background-color: #f1948a; color: #78281f; font-weight: bold;"
+                    return "background-color: #f4bebe; color: #5c1d17; font-weight: bold;"
                 elif -10.0 <= pct < -7.5:
-                    return "background-color: #f5b7b1; color: #78281f; font-weight: bold;"
+                    return "background-color: #f8d2d4; color: #5c1d17; font-weight: bold;"
                 elif -7.5 <= pct < -5.0:
-                    return "background-color: #fadbd8; color: #78281f; font-weight: bold;"
+                    return "background-color: #fbe3e4; color: #5c1d17; font-weight: bold;"
                 elif -5.0 <= pct < -2.5:
-                    return "background-color: #fdedec; color: #78281f; font-weight: bold;"
+                    return "background-color: #fdf2f2; color: #5c1d17; font-weight: bold;"
                 elif -2.5 <= pct < 0.0:
-                    return "background-color: #fdf2e9; color: #78281f; font-weight: bold;"
+                    return "background-color: #fff9f9; color: #5c1d17; font-weight: bold;"
 
-                # --- POSITIV-BEREICHE (Heatmap in 2,5 % Schritten) ---
+                # --- POSITIV-BEREICHE (Helle Mint- & Pastell-Töne) ---
                 elif 0.0 <= pct < 2.5:
-                    return "background-color: #e9f7ef; color: #145a32; font-weight: bold;"  # Sehr zartes Pastellgrün
+                    return "background-color: #f4fbf7; color: #0e3a1d; font-weight: bold;"  # Hauch von Grün
                 elif 2.5 <= pct < 5.0:
-                    return "background-color: #d4efdf; color: #145a32; font-weight: bold;"  # Mildes Hellgrün
+                    return "background-color: #e4f6ec; color: #0e3a1d; font-weight: bold;"  # Sehr zartes Mint
                 elif 5.0 <= pct < 7.5:
-                    return "background-color: #a9dfbf; color: #145a32; font-weight: bold;"  # Softes Mittelgrün
+                    return "background-color: #d1f0df; color: #0e3a1d; font-weight: bold;"  # Softes Mint
                 elif 7.5 <= pct < 10.0:
-                    return "background-color: #7dcea0; color: #114b2a; font-weight: bold;"  # Frisches Grün
+                    return "background-color: #bce9d1; color: #0e3a1d; font-weight: bold;"  # Helles Pastellgrün
                 elif 10.0 <= pct < 12.5:
-                    return "background-color: #52be80; color: #ffffff; font-weight: bold;"  # Sattes Grün
+                    return "background-color: #a5e1c2; color: #082813; font-weight: bold;"  # Frisches Mint
                 elif 12.5 <= pct < 15.0:
-                    return "background-color: #27ae60; color: #ffffff; font-weight: bold;"  # Kräftiges Grün
+                    return "background-color: #8ed8b2; color: #082813; font-weight: bold;"  # Milder Grün-Ton
                 elif 15.0 <= pct < 17.5:
-                    return "background-color: #229954; color: #ffffff; font-weight: bold;"  # Dunkelgrün
+                    return "background-color: #76cea1; color: #082813; font-weight: bold;"  # Helligkeits-Stufe 7
                 elif 17.5 <= pct < 20.0:
-                    return "background-color: #1e8449; color: #ffffff; font-weight: bold;"  # Sehr dunkel
+                    return "background-color: #5ec38f; color: #04190b; font-weight: bold;"  # Kräftigeres Hellgrün
                 else:  # >= 20.0 %
-                    return "background-color: #145a32; color: #ffffff; font-weight: bold;"  # Tiefes Waldgrün
+                    return "background-color: #45b77d; color: #04190b; font-weight: bold;"  # Maximaler Pastell-Green-Wert
 
             for col in target_cols:
                 if col in df.columns:
