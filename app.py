@@ -3,6 +3,9 @@ from datetime import datetime
 import logging
 import warnings
 import re
+import os
+import json
+import time
 import pandas as pd
 import requests
 import streamlit as st
@@ -10,7 +13,7 @@ import yfinance as yf
 
 import importlib
 import portfolio
-importlib.reload(portfolio)  # Zwingt Python, portfolio.py bei jedem Rerun neu zu lesen
+importlib.reload(portfolio)
 
 # Externe Portfolio- und PIN-Datei importieren
 from portfolio import DEINE_PIN, PORTFOLIO
@@ -52,6 +55,32 @@ if not pin_abfrage():
 
 warnings.filterwarnings("ignore")
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
+# ==========================================
+# PERSISTENTER ISIN-ZU-TICKER CACHE
+# ==========================================
+CACHE_FILE = "isin_cache.json"
+
+
+def load_isin_cache():
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_isin_cache(cache):
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2)
+    except Exception:
+        pass
+
+
+ISIN_CACHE = load_isin_cache()
 
 # ==========================================
 # MATCHING & ISIN LISTE
@@ -101,94 +130,132 @@ def parse_isin_file(filename="isin.txt"):
     return etf_liste
 
 
-@st.cache_data(ttl=86400)  # 24h Caching zur Vermeidung von Rate Limits
 def isin_zu_ticker(isin):
-    url = f"https://query2.finance.yahoo.com/v1/finance/search?q={isin}"
+    if isin in MANUAL_TICKERS:
+        return MANUAL_TICKERS[isin][0]
+    if isin in ISIN_CACHE and ISIN_CACHE[isin]:
+        return ISIN_CACHE[isin]
+
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     }
-    try:
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code == 200:
-            quotes = response.json().get("quotes", [])
-            for q in quotes:
-                symbol = q.get("symbol", "")
-                if symbol.endswith(".DE"):
-                    return symbol
-            for suffix in [".L", ".PA", ".AS", ".MI", ".SW", ".F"]:
+    endpoints = [
+        f"https://query1.finance.yahoo.com/v1/finance/search?q={isin}&quotesCount=5",
+        f"https://query2.finance.yahoo.com/v1/finance/search?q={isin}&quotesCount=5",
+    ]
+
+    for url in endpoints:
+        try:
+            time.sleep(0.05)  # Minimale Verpufferung gegen IP-Sperre
+            response = requests.get(url, headers=headers, timeout=5)
+            if response.status_code == 200:
+                quotes = response.json().get("quotes", [])
+                found_symbol = None
                 for q in quotes:
                     symbol = q.get("symbol", "")
-                    if symbol.endswith(suffix):
-                        return symbol
-            for q in quotes:
-                symbol = q.get("symbol", "")
-                if not any(
-                    symbol.endswith(bad) for bad in [".SG", ".BE", ".MU", ".DU"]
-                ):
-                    return symbol
-    except Exception:
-        pass
-    return None
+                    if symbol.endswith(".DE"):
+                        found_symbol = symbol
+                        break
+                if not found_symbol:
+                    for suffix in [".L", ".PA", ".AS", ".MI", ".SW", ".F"]:
+                        for q in quotes:
+                            symbol = q.get("symbol", "")
+                            if symbol.endswith(suffix):
+                                found_symbol = symbol
+                                break
+                        if found_symbol:
+                            break
+                if not found_symbol and quotes:
+                    for q in quotes:
+                        symbol = q.get("symbol", "")
+                        if symbol and not any(
+                            symbol.endswith(bad) for bad in [".SG", ".BE", ".MU", ".DU"]
+                        ):
+                            found_symbol = symbol
+                            break
 
-
-@st.cache_data(ttl=300)
-def berechne_indikatoren(isin):
-    kandidaten = (
-        MANUAL_TICKERS[isin]
-        if isin in MANUAL_TICKERS
-        else ([isin_zu_ticker(isin)] if isin_zu_ticker(isin) else [])
-    )
-
-    data, erfolgreicher_ticker = None, None
-    for ticker_symbol in kandidaten:
-        if not ticker_symbol:
-            continue
-        try:
-            t_obj = yf.Ticker(ticker_symbol)
-            df = t_obj.history(period="2y", auto_adjust=False)
-
-            # Sicherstellen, dass keine MultiIndex-Spalten vorhanden sind
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-
-            df = df.dropna(subset=["Close"])
-
-            if not df.empty and len(df) >= 200:
-                data, erfolgreicher_ticker = df, ticker_symbol
-                break
+                if found_symbol:
+                    ISIN_CACHE[isin] = found_symbol
+                    save_isin_cache(ISIN_CACHE)
+                    return found_symbol
         except Exception:
             continue
 
-    if data is None:
-        return None, (kandidaten[0] if kandidaten else "N/A")
+    return None
 
+
+@st.cache_data(ttl=1800)
+def lade_alle_kursdaten_batch(ticker_liste):
+    unique_tickers = list(set([t for t in ticker_liste if t]))
+    if not unique_tickers:
+        return {}
+
+    chunk_size = 35
+    ergebnisse = {}
+
+    for i in range(0, len(unique_tickers), chunk_size):
+        chunk = unique_tickers[i : i + chunk_size]
+        try:
+            df_batch = yf.download(
+                tickers=chunk,
+                period="2y",
+                auto_adjust=False,
+                group_by="ticker",
+                progress=False,
+                threads=True,
+            )
+
+            if len(chunk) == 1:
+                t = chunk[0]
+                if not df_batch.empty:
+                    ergebnisse[t] = df_batch
+            else:
+                for t in chunk:
+                    if (
+                        isinstance(df_batch.columns, pd.MultiIndex)
+                        and t in df_batch.columns.levels[0]
+                    ):
+                        sub_df = df_batch[t].dropna(subset=["Close"])
+                        if not sub_df.empty and len(sub_df) >= 200:
+                            ergebnisse[t] = sub_df
+        except Exception:
+            pass
+
+    # Einzel-Fallback für fehlende Ticker
+    for t in unique_tickers:
+        if t not in ergebnisse:
+            try:
+                t_obj = yf.Ticker(t)
+                df_single = t_obj.history(period="2y", auto_adjust=False)
+                if isinstance(df_single.columns, pd.MultiIndex):
+                    df_single.columns = df_single.columns.get_level_values(0)
+                df_single = df_single.dropna(subset=["Close"])
+                if not df_single.empty and len(df_single) >= 200:
+                    ergebnisse[t] = df_single
+            except Exception:
+                pass
+
+    return ergebnisse
+
+
+def berechne_indikatoren_aus_df(df, ticker_symbol):
+    data = df.copy()
+
+    # Echtzeit-Aktualisierung des letzten Kurses
     yahoo_zeit = "k.A."
     try:
-        if erfolgreicher_ticker:
-            t_obj = yf.Ticker(erfolgreicher_ticker)
-            fi = getattr(t_obj, "fast_info", None)
-            
-            # Aktualisierung des letzten Kurses aus Live-Daten
-            if fi and getattr(fi, "last_price", None):
-                live_price = fi.last_price
-                if live_price and not pd.isna(live_price) and live_price > 0:
-                    data.loc[data.index[-1], "Close"] = float(live_price)
+        t_obj = yf.Ticker(ticker_symbol)
+        fi = getattr(t_obj, "fast_info", None)
+        if fi and getattr(fi, "last_price", None):
+            live_price = fi.last_price
+            if live_price and not pd.isna(live_price) and live_price > 0:
+                data.loc[data.index[-1], "Close"] = float(live_price)
 
-            if fi and getattr(fi, "last_trade_time", None):
-                ts = pd.to_datetime(
-                    fi.last_trade_time, unit="s", utc=True
-                ).tz_convert("Europe/Berlin")
-                yahoo_zeit = ts.strftime("%H:%M Uhr (%d.%m.)")
-            else:
-                intraday = t_obj.history(period="1d", interval="1m")
-                if not intraday.empty:
-                    last_ts = intraday.index[-1]
-                    if last_ts.tzinfo is not None:
-                        last_ts = last_ts.tz_convert("Europe/Berlin")
-                    yahoo_zeit = last_ts.strftime("%H:%M Uhr (%d.%m.)")
-                    last_price = intraday["Close"].iloc[-1]
-                    if not pd.isna(last_price) and last_price > 0:
-                        data.loc[data.index[-1], "Close"] = float(last_price)
+        if fi and getattr(fi, "last_trade_time", None):
+            ts = pd.to_datetime(fi.last_trade_time, unit="s", utc=True).tz_convert(
+                "Europe/Berlin"
+            )
+            yahoo_zeit = ts.strftime("%H:%M Uhr (%d.%m.)")
     except Exception:
         pass
 
@@ -196,7 +263,12 @@ def berechne_indikatoren(isin):
     low = data["Low"].ffill().dropna() if "Low" in data else close
     high = data["High"].ffill().dropna() if "High" in data else close
 
-    # 52-Wochen-Hoch (ca. 252 Handelstage)
+    if yahoo_zeit == "k.A.":
+        last_dt = close.index[-1]
+        yahoo_zeit = (
+            last_dt.strftime("%d.%m.%Y") if hasattr(last_dt, "strftime") else "k.A."
+        )
+
     high_52w = float(high.tail(252).max()) if len(high) >= 252 else float(high.max())
 
     gd200 = close.rolling(window=200).mean()
@@ -224,9 +296,7 @@ def berechne_indikatoren(isin):
 
     gd200_heute = float(gd200.iloc[-1])
     ema50_heute = float(ema50.iloc[-1])
-    gd200_vor_10d = (
-        float(gd200.iloc[-11]) if len(gd200) >= 11 else gd200_heute
-    )
+    gd200_vor_10d = float(gd200.iloc[-11]) if len(gd200) >= 11 else gd200_heute
     gd200_steigt = gd200_heute > gd200_vor_10d
 
     perf_1w = 0.0
@@ -273,7 +343,7 @@ def berechne_indikatoren(isin):
         "dip_score": dip_score,
         "is_fallendes_messer": is_fallendes_messer,
         "yahoo_zeit": yahoo_zeit,
-    }, erfolgreicher_ticker
+    }
 
 
 # ==========================================
@@ -290,42 +360,26 @@ with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
         * **EMA50 > GD200:** Mittelfristiger Trend liegt über dem Langfristtrend.
         * **GD200 steigt an:** GD200 heute ist höher als der GD200 vor 10 Handelstagen (`GD200 v10T`).
     4. **Turnaround-Logik bestätigt:** Kein fallendes Messer!
-    
-    ### 🔄 Turnaround-Logik (Erholung vor dem Kauf)
-    Ein ETF mit **RSI < 35** ist erst dann ein **echtes Kaufsignal**, wenn der Verkaufsdruck nachlässt und Käufer in den Markt zurückkehren.
-    
-    Das Skript prüft automatisch zwei Wege:
-    
-    1. **Intraday-Turnaround (Einstieg am selben Tag):**
-       * Der RSI liegt aktuell **unter 35** **UND** der Kurs hat sich um mindestens **+0,5 % vom heutigen Tagestief erholt**.
-    
-    2. **Vortags-Turnaround (Klassischer V-Haken):**
-       * Der RSI lag **gestern bereits unter 35** **UND** der RSI ist heute höher als gestern (`RSI_heute > RSI_gestern`).
-    
-    *Solange keiner dieser beiden Fälle zutrifft, gilt der Wert als **'fallendes Messer'** und das Kaufsignal wird blockiert.*
     """)
 
 with st.expander("📊 Wie werden Kauf- & Verkaufstranchen gesetzt? (Regelwerk)", expanded=False):
     col_t1, col_t2 = st.columns(2)
-    
     with col_t1:
         st.markdown("""
         ### 🟢 Tranche 1 (50 % Verkauf)
         * **Ziel:** Erreichen der **EMA50-Linie** (Mean Reversion).
         * **Sinn:** Schnelle Teilgewinnmitnahme nach dem Dip zur Risiko-Reduzierung.
         """)
-        
     with col_t2:
         st.markdown("""
         ### 🎯 Tranche 2 (50 % Verkauf)
         * **Ziel:** **52-Wochen-Hoch (-1 % Puffer)**.
-        * **Absicherung:** Dynamic Stop Loss bei **Kaufkurs + 50 % des T1-Gewinns** (garantiertes Plus + maximaler Atempuffer).
+        * **Absicherung:** Dynamic Stop Loss bei **Kaufkurs + 50 % des T1-Gewinns**.
         """)
 
 if "letztes_update" in st.session_state:
     st.caption(
-        f"⏱️ **Letzter allgemeiner Scan-Stand:**"
-        f" {st.session_state['letztes_update']}"
+        f"⏱️ **Letzter allgemeiner Scan-Stand:** {st.session_state['letztes_update']}"
     )
 
 st.sidebar.header("⚙️ Steuerung")
@@ -337,7 +391,6 @@ if st.sidebar.button("🔄 Daten aktualisieren", use_container_width=True):
     st.rerun()
 
 etfs = parse_isin_file("isin.txt")
-
 portfolio_isins = [p["isin"] for p in PORTFOLIO if not p.get("sold", False)]
 etfs_isins = {e["isin"] for e in etfs}
 for p in PORTFOLIO:
@@ -346,113 +399,122 @@ for p in PORTFOLIO:
 
 st.sidebar.info(f"📋 **{len(etfs)} ETFs** werden überwacht.")
 
-# --- PARALLELER DATEN-SCANNER ---
+# --- BATCH-DATEN SCANNER ---
 if "kauf_signale" not in st.session_state:
+    progress_bar = st.progress(0, text="🔍 Schritt 1/2: Zuordnung ISIN ➔ Ticker...")
+
+    isin_ticker_map = {}
+    for idx, item in enumerate(etfs):
+        isin = item["isin"]
+        ticker = isin_zu_ticker(isin)
+        isin_ticker_map[isin] = ticker
+        progress_bar.progress((idx + 1) / len(etfs), text=f"🔍 Zuordnung: {isin} ➔ {ticker or 'N/A'}")
+
+    progress_bar.progress(1.0, text="⚡ Schritt 2/2: Lade Kursdaten im Stapel...")
+
+    alle_ticker = list(set([t for t in isin_ticker_map.values() if t]))
+    geladene_dfs = lade_alle_kursdaten_batch(alle_ticker)
+
     kauf_signale, watchlist_signale, fehlgeschlagene_etfs = [], [], []
     letzter_zeitstempel = "k.A."
-    progress_bar = st.progress(0, text="⚡ Lade Kursdaten (Parallel-Scan)...")
 
-    total_etfs = len(etfs)
-    completed_count = 0
+    for item in etfs:
+        isin = item["isin"]
+        candidates = MANUAL_TICKERS[isin] if isin in MANUAL_TICKERS else []
+        t_found = isin_ticker_map.get(isin)
+        if t_found and t_found not in candidates:
+            candidates.append(t_found)
 
-    def load_etf_data(item):
-        data, ticker = berechne_indikatoren(item["isin"])
-        return item, data, ticker
+        df_etf = None
+        erfolgreicher_ticker = None
 
-    # max_workers=4 reduziert Rate-Limiting-Sperren von Yahoo Finance
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(load_etf_data, item) for item in etfs]
+        for cand in candidates:
+            if cand in geladene_dfs:
+                df_etf = geladene_dfs[cand]
+                erfolgreicher_ticker = cand
+                break
 
-        for future in as_completed(futures):
-            completed_count += 1
-            item, data, ticker = future.result()
-
-            progress_bar.progress(
-                completed_count / total_etfs,
-                text=f"⚡ Scanne ETF {completed_count}/{total_etfs}: {item['isin']}",
-            )
-
-            if not data:
-                fehlgeschlagene_etfs.append({
-                    "Sektor": item["sektor"],
-                    "ISIN": item["isin"],
-                    "Ticker": ticker,
-                })
-                continue
-
-            if data.get("yahoo_zeit") and data["yahoo_zeit"] != "k.A.":
-                letzter_zeitstempel = data["yahoo_zeit"]
-
-            c, rsi, rsi35, gd200, gd200_10d, ema50, gd200_steigt, perf_1w, score, messer = (
-                data["close"],
-                data["rsi"],
-                data["rsi35_preis"],
-                data["gd200"],
-                data["gd200_vor_10d"],
-                data["ema50"],
-                data["gd200_steigt"],
-                data["perf_1w"],
-                data["dip_score"],
-                data["is_fallendes_messer"],
-            )
-
-            grundtrend_ok = ema50 > gd200 and gd200_steigt
-            gd200_abstand = ((gd200 - c) / c) * 100
-            gd200_10d_abstand = ((gd200_10d - c) / c) * 100
-            rsi35_abstand = ((rsi35 - c) / c) * 100
-
-            is_kauf = grundtrend_ok and (rsi < 35) and (c > gd200) and (not messer)
-            is_watch = rsi < 40 and c >= (gd200 * 0.97)
-            is_in_portfolio = item["isin"] in portfolio_isins
-
-            entry = {
+        if df_etf is None or df_etf.empty:
+            fehlgeschlagene_etfs.append({
                 "Sektor": item["sektor"],
-                "ISIN": item["isin"],
-                "Ticker": ticker,
-                "Kurs": c,
-                "RSI": round(rsi, 1),
-                "RSI 35 Preis": rsi35,
-                "RSI35_Abstand": rsi35_abstand,
-                "GD200": gd200,
-                "GD200_Abstand": gd200_abstand,
-                "GD200_10d": gd200_10d,
-                "GD200_10d_Abstand": gd200_10d_abstand,
-                "GD200_steigt": gd200_steigt,
-                "EMA50": ema50,
-                "1W Perf.": perf_1w,
-                "Dip Score": score,
-                "Zeitstempel": data["yahoo_zeit"],
-                "Ist_Kaufsignal": is_kauf,
-                "Ist_Portfolio": is_in_portfolio,
-            }
+                "ISIN": isin,
+                "Ticker": candidates[0] if candidates else "N/A",
+            })
+            continue
 
-            if is_kauf:
-                kauf_signale.append(entry)
+        data = berechne_indikatoren_aus_df(df_etf, erfolgreicher_ticker)
 
-            if is_kauf or is_watch or is_in_portfolio:
-                watchlist_signale.append(entry)
+        if data.get("yahoo_zeit") and data["yahoo_zeit"] != "k.A.":
+            letzter_zeitstempel = data["yahoo_zeit"]
+
+        c, rsi, rsi35, gd200, gd200_10d, ema50, gd200_steigt, perf_1w, score, messer = (
+            data["close"],
+            data["rsi"],
+            data["rsi35_preis"],
+            data["gd200"],
+            data["gd200_vor_10d"],
+            data["ema50"],
+            data["gd200_steigt"],
+            data["perf_1w"],
+            data["dip_score"],
+            data["is_fallendes_messer"],
+        )
+
+        grundtrend_ok = ema50 > gd200 and gd200_steigt
+        gd200_abstand = ((gd200 - c) / c) * 100
+        gd200_10d_abstand = ((gd200_10d - c) / c) * 100
+        rsi35_abstand = ((rsi35 - c) / c) * 100
+
+        is_kauf = grundtrend_ok and (rsi < 35) and (c > gd200) and (not messer)
+        is_watch = rsi < 40 and c >= (gd200 * 0.97)
+        is_in_portfolio = isin in portfolio_isins
+
+        entry = {
+            "Sektor": item["sektor"],
+            "ISIN": isin,
+            "Ticker": erfolgreicher_ticker,
+            "Kurs": c,
+            "RSI": round(rsi, 1),
+            "RSI 35 Preis": rsi35,
+            "RSI35_Abstand": rsi35_abstand,
+            "GD200": gd200,
+            "GD200_Abstand": gd200_abstand,
+            "GD200_10d": gd200_10d,
+            "GD200_10d_Abstand": gd200_10d_abstand,
+            "GD200_steigt": gd200_steigt,
+            "EMA50": ema50,
+            "1W Perf.": perf_1w,
+            "Dip Score": score,
+            "Zeitstempel": data["yahoo_zeit"],
+            "Ist_Kaufsignal": is_kauf,
+            "Ist_Portfolio": is_in_portfolio,
+        }
+
+        if is_kauf:
+            kauf_signale.append(entry)
+
+        if is_kauf or is_watch or is_in_portfolio:
+            watchlist_signale.append(entry)
 
     progress_bar.empty()
     st.session_state["kauf_signale"] = kauf_signale
     st.session_state["watchlist_signale"] = watchlist_signale
     st.session_state["fehlgeschlagene_etfs"] = fehlgeschlagene_etfs
     st.session_state["letztes_update"] = letzter_zeitstempel
+    st.session_state["geladene_dfs"] = geladene_dfs
 
-# --- GEPUFFERTE FEHLERMELDUNGEN ANZEIGEN ---
+# --- FEHLERMELDUNGEN ANZEIGEN ---
 failed_list = st.session_state.get("fehlgeschlagene_etfs", [])
 if failed_list:
     with st.expander(f"⚠️ Hinweis: {len(failed_list)} ETF(s) konnten nicht geladen werden"):
         st.warning(
-            "Für folgende Werte konnten bei Yahoo Finance keine Kursdaten abgerufen werden "
-            "(z. B. fehlerhafte ISIN oder vorübergehende API-Sperre):"
+            "Für folgende ISINs konnte Yahoo Finance keine Kursdaten liefern (z.B. illiquide Exoten):"
         )
         st.dataframe(pd.DataFrame(failed_list), use_container_width=True, hide_index=True)
 
-# Aktive Positionen für Tab 3 ermitteln (noch nicht vollständig verkauft)
 aktive_positionen = [p for p in PORTFOLIO if not p.get("sold", False)]
 historie_positionen = [p for p in PORTFOLIO if p.get("partially_sold", False) or p.get("sold", False)]
 
-# TABS REGISTER
 tab1, tab2, tab3, tab4 = st.tabs([
     f"🔥 Kaufsignale ({len(st.session_state.get('kauf_signale', []))})",
     f"📋 Watchlist ({len(st.session_state.get('watchlist_signale', []))})",
@@ -465,8 +527,7 @@ with tab1:
     kauf = st.session_state.get("kauf_signale", [])
     if kauf:
         st.success(
-            f"**{len(kauf)} Kaufsignal(e) gefunden!** (RSI < 35, Kurs > GD200,"
-            " Turnaround bestätigt)"
+            f"**{len(kauf)} Kaufsignal(e) gefunden!** (RSI < 35, Kurs > GD200, Turnaround bestätigt)"
         )
         for item in kauf:
             rsi_bg = "#d4edda" if item["RSI"] < 35 else "#f8d7da"
@@ -516,24 +577,21 @@ with tab2:
     watch = st.session_state.get("watchlist_signale", [])
     if watch:
         st.caption(
-            "💡 **Farblegende:** 🥇/🥈/🥉 **Top Dip-Scores** | 🟩 **GD200:**"
-            " Kurs > GD200 | 🟩 **GD200 v10T:** GD200 steigt | 🟩 **EMA50:**"
-            " EMA50 > GD200 | 🟩 **RSI:** RSI < 35 | 🟪 **Lila:** Im Portfolio"
+            "💡 **Farblegende:** 🥇/🥈/🥉 **Top Dip-Scores** | 🟩 **GD200:** Kurs > GD200 | "
+            "🟩 **GD200 v10T:** GD200 steigt | 🟩 **EMA50:** EMA50 > GD200 | 🟩 **RSI:** RSI < 35 | 🟪 **Lila:** Im Portfolio"
         )
 
-        col_sort1, col_sort2 = st.columns([2, 2])
-        with col_sort1:
-            sort_kriterium = st.selectbox(
-                "🏆 Watchlist Sortierung nach:",
-                [
-                    "🔥 RSI (Niedrigster zuerst)",
-                    "🚀 Dip-Potential Score",
-                    "🎯 Abstand zu RSI 35 Zielkurs",
-                    "📊 Nähe zu GD200-Unterstützung",
-                    "📉 Stärkster 1W-Rücksetzer",
-                ],
-                index=0,
-            )
+        sort_kriterium = st.selectbox(
+            "🏆 Watchlist Sortierung nach:",
+            [
+                "🔥 RSI (Niedrigster zuerst)",
+                "🚀 Dip-Potential Score",
+                "🎯 Abstand zu RSI 35 Zielkurs",
+                "📊 Nähe zu GD200-Unterstützung",
+                "📉 Stärkster 1W-Rücksetzer",
+            ],
+            index=0,
+        )
 
         df_watch = pd.DataFrame(watch)
         df_watch = df_watch.sort_values(by="Dip Score", ascending=False)
@@ -541,9 +599,7 @@ with tab2:
             lambda x: str(x).split(".")[0] if x else ""
         )
         df_watch = df_watch.drop_duplicates(subset=["ISIN"], keep="first")
-        df_watch = df_watch.drop_duplicates(
-            subset=["Ticker_Base"], keep="first"
-        )
+        df_watch = df_watch.drop_duplicates(subset=["Ticker_Base"], keep="first")
 
         df_watch["Dip_Rank"] = range(1, len(df_watch) + 1)
 
@@ -552,9 +608,7 @@ with tab2:
         elif sort_kriterium == "🚀 Dip-Potential Score":
             df_watch = df_watch.sort_values(by="Dip Score", ascending=False)
         elif sort_kriterium == "🎯 Abstand zu RSI 35 Zielkurs":
-            df_watch = df_watch.sort_values(
-                by="RSI35_Abstand", ascending=False
-            )
+            df_watch = df_watch.sort_values(by="RSI35_Abstand", ascending=False)
         elif sort_kriterium == "📊 Nähe zu GD200-Unterstützung":
             df_watch = df_watch.sort_values(by="GD200_Abstand", ascending=True)
         elif sort_kriterium == "📉 Stärkster 1W-Rücksetzer":
@@ -616,12 +670,8 @@ with tab2:
             axis=1,
         )
 
-        display_df["1W Perf."] = df_watch["1W Perf."].map(
-            lambda x: f"{x:+.2f}%"
-        )
-        display_df["Dip Score"] = df_watch["Dip Score"].map(
-            lambda x: f"🔥 {x:.1f}"
-        )
+        display_df["1W Perf."] = df_watch["1W Perf."].map(lambda x: f"{x:+.2f}%")
+        display_df["Dip Score"] = df_watch["Dip Score"].map(lambda x: f"🔥 {x:.1f}")
         display_df["Zeitstempel"] = df_watch["Zeitstempel"]
 
         def style_watchlist_cells(df):
@@ -637,63 +687,52 @@ with tab2:
 
                 if row_raw["GD200"] < row_raw["Kurs"]:
                     styles.loc[idx, "GD200"] = (
-                        "background-color: #d4edda; color: #155724;"
-                        " font-weight: bold;"
+                        "background-color: #d4edda; color: #155724; font-weight: bold;"
                     )
                 else:
                     styles.loc[idx, "GD200"] = (
-                        "background-color: #f8d7da; color: #721c24;"
-                        " font-weight: bold;"
+                        "background-color: #f8d7da; color: #721c24; font-weight: bold;"
                     )
 
                 if row_raw["GD200_steigt"]:
                     styles.loc[idx, "GD200 v10T"] = (
-                        "background-color: #d4edda; color: #155724;"
-                        " font-weight: bold;"
+                        "background-color: #d4edda; color: #155724; font-weight: bold;"
                     )
                 else:
                     styles.loc[idx, "GD200 v10T"] = (
-                        "background-color: #f8d7da; color: #721c24;"
-                        " font-weight: bold;"
+                        "background-color: #f8d7da; color: #721c24; font-weight: bold;"
                     )
 
                 if row_raw["EMA50"] > row_raw["GD200"]:
                     styles.loc[idx, "EMA50"] = (
-                        "background-color: #d4edda; color: #155724;"
-                        " font-weight: bold;"
+                        "background-color: #d4edda; color: #155724; font-weight: bold;"
                     )
                 else:
                     styles.loc[idx, "EMA50"] = (
-                        "background-color: #f8d7da; color: #721c24;"
-                        " font-weight: bold;"
+                        "background-color: #f8d7da; color: #721c24; font-weight: bold;"
                     )
 
                 if row_raw["RSI"] < 35.0:
                     styles.loc[idx, "RSI"] = (
-                        "background-color: #d4edda; color: #155724;"
-                        " font-weight: bold;"
+                        "background-color: #d4edda; color: #155724; font-weight: bold;"
                     )
                 else:
                     styles.loc[idx, "RSI"] = (
-                        "background-color: #f8d7da; color: #721c24;"
-                        " font-weight: bold;"
+                        "background-color: #f8d7da; color: #721c24; font-weight: bold;"
                     )
 
                 dip_rank = row_raw.get("Dip_Rank", 999)
                 if dip_rank == 1:
                     styles.loc[idx, "Ticker"] = (
-                        "background-color: #fef9e7; color: #7d6608;"
-                        " font-weight: bold;"
+                        "background-color: #fef9e7; color: #7d6608; font-weight: bold;"
                     )
                 elif dip_rank == 2:
                     styles.loc[idx, "Ticker"] = (
-                        "background-color: #f2f3f4; color: #424949;"
-                        " font-weight: bold;"
+                        "background-color: #f2f3f4; color: #424949; font-weight: bold;"
                     )
                 elif dip_rank == 3:
                     styles.loc[idx, "Ticker"] = (
-                        "background-color: #fbeee6; color: #7e5109;"
-                        " font-weight: bold;"
+                        "background-color: #fbeee6; color: #7e5109; font-weight: bold;"
                     )
                 else:
                     styles.loc[idx, "Ticker"] = "font-weight: bold;"
@@ -716,47 +755,55 @@ with tab3:
     if not aktive_positionen:
         st.info("Aktuell keine aktiven offene Positionen im Portfolio.")
 
+    geladene_dfs = st.session_state.get("geladene_dfs", {})
+
     for pos in aktive_positionen:
         try:
-            # Zentrale Kursdaten über die ISIN beziehen
-            data, ticker_used = berechne_indikatoren(pos["isin"])
+            isin = pos["isin"]
+            candidates = MANUAL_TICKERS[isin] if isin in MANUAL_TICKERS else []
+            t_found = isin_zu_ticker(isin)
+            if t_found and t_found not in candidates:
+                candidates.append(t_found)
 
-            if not data:
+            df_pos = None
+            ticker_used = pos.get("ticker", "N/A")
+
+            for cand in candidates:
+                if cand in geladene_dfs:
+                    df_pos = geladene_dfs[cand]
+                    ticker_used = cand
+                    break
+
+            if df_pos is None:
                 st.error(f"Keine Kursdaten für {pos['name']} ({pos['isin']}) verfügbar.")
                 continue
+
+            data = berechne_indikatoren_aus_df(df_pos, ticker_used)
 
             current_price = data["close"]
             rsi_today = data["rsi"]
             ema50_today = data["ema50"]
-            high_52w = data["high_52w"]  # Direkt aus data nutzen
+            high_52w = data["high_52w"]
 
-            # 52-Wochen-Hoch & Tranche 2 Ziel (-1%)
             ath_target_price = high_52w * 0.99
-            dist_ath_pct = (
-                (current_price - ath_target_price) / current_price
-            ) * 100
+            dist_ath_pct = ((current_price - ath_target_price) / current_price) * 100
 
             is_partially_sold = pos.get("partially_sold", False)
             buy_price = float(pos["buy_price"])
 
-            # Stop-Loss Limit Festlegung (DYNAMISCH: Kaufkurs + 50% des T1-Gewinns)
             if is_partially_sold and pos.get("t1_sell_price"):
-                # Phase 2: T1 wurde realisiert
                 t1_price = float(pos["t1_sell_price"])
                 t1_profit = t1_price - buy_price
                 stop_loss_limit = buy_price + (t1_profit / 2.0)
                 sl_label = "Tranche 2: Stop Loss Limit"
             else:
-                # Phase 1: T1 noch nicht verkauft -> Vorschau auf den SL bei T1-Verkauf am EMA50
                 if ema50_today > buy_price:
                     stop_loss_limit = buy_price + ((ema50_today - buy_price) / 2.0)
                 else:
-                    stop_loss_limit = buy_price  # Fallback auf Kaufkurs (Einstand)
+                    stop_loss_limit = buy_price
                 sl_label = "Tranche 2: Stop Loss (Vorschau)"
 
-            dist_stop_loss_pct = (
-                (current_price - stop_loss_limit) / current_price
-            ) * 100
+            dist_stop_loss_pct = ((current_price - stop_loss_limit) / current_price) * 100
 
             investment = buy_price * pos["shares"]
             current_value = current_price * pos["shares"]
@@ -766,12 +813,9 @@ with tab3:
             days_held = 0
             if pos.get("buy_date"):
                 buy_date = pd.to_datetime(pos["buy_date"])
-                today_date = pd.to_datetime(
-                    datetime.now().strftime("%Y-%m-%d")
-                )
+                today_date = pd.to_datetime(datetime.now().strftime("%Y-%m-%d"))
                 days_held = (today_date - buy_date).days
 
-            # Signal-Logik
             signal_type = "info"
             if not is_partially_sold:
                 if current_price >= ema50_today:
@@ -784,9 +828,7 @@ with tab3:
                         f" `'t1_sell_price': {current_price:.2f}`"
                     )
                 else:
-                    dist_ema50_pct = (
-                        (current_price - ema50_today) / current_price
-                    ) * 100
+                    dist_ema50_pct = ((current_price - ema50_today) / current_price) * 100
                     signal = (
                         f"🟢 **100% IM DEPOT:** Warten auf Tranche 1 am EMA50 bei **{ema50_today:.2f} €** "
                         f"(Abstand: {dist_ema50_pct:+.2f}%)"
@@ -814,38 +856,18 @@ with tab3:
                         f"oder Absicherung beim dynamischen Stop-Loss (50% T1-Gewinn) bei **{stop_loss_limit:.2f} €**."
                     )
 
-            # --- ANZEIGE IN CONTAINERN ---
             with st.container(border=True):
-                st.markdown(
-                    f"### {pos['name']} (`{ticker_used}`) — ISIN:"
-                    f" `{pos['isin']}`"
-                )
+                st.markdown(f"### {pos['name']} (`{ticker_used}`) — ISIN: `{pos['isin']}`")
 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric(
                     "Depot-Status",
-                    (
-                        "✅ 50% Verkauft"
-                        if is_partially_sold
-                        else "⏳ 100% Im Depot"
-                    ),
+                    "✅ 50% Verkauft" if is_partially_sold else "⏳ 100% Im Depot",
                     f"{days_held} Tage gehalten",
                 )
-                c2.metric(
-                    "Kaufkurs / Aktuell",
-                    f"{buy_price:.2f} €",
-                    f"Aktuell: {current_price:.2f} €",
-                )
-                c3.metric(
-                    "Performance Gesamt",
-                    f"{profit_pct:+.2f}%",
-                    f"{profit_eur:+.2f} €",
-                )
-                c4.metric(
-                    "Aktueller RSI",
-                    f"{rsi_today:.1f}",
-                    f"EMA50: {ema50_today:.2f} €",
-                )
+                c2.metric("Kaufkurs / Aktuell", f"{buy_price:.2f} €", f"Aktuell: {current_price:.2f} €")
+                c3.metric("Performance Gesamt", f"{profit_pct:+.2f}%", f"{profit_eur:+.2f} €")
+                c4.metric("Aktueller RSI", f"{rsi_today:.1f}", f"EMA50: {ema50_today:.2f} €")
 
                 st.markdown("---")
 
@@ -854,9 +876,7 @@ with tab3:
                 if is_partially_sold and pos.get("t1_sell_price"):
                     t1_price = float(pos["t1_sell_price"])
                     t1_profit_pct = ((t1_price - buy_price) / buy_price) * 100
-                    t1_profit_eur = (t1_price - buy_price) * (
-                        pos["shares"] / 2.0
-                    )
+                    t1_profit_eur = (t1_price - buy_price) * (pos["shares"] / 2.0)
 
                     t1.metric(
                         "Tranche 1 (Realisiert)",
@@ -880,9 +900,7 @@ with tab3:
                     sl_label,
                     f"{stop_loss_limit:.2f} €",
                     f"Puffer: {dist_stop_loss_pct:+.2f}%",
-                    help=(
-                        "Dynamischer Stop Loss: Kaufkurs + 50% des T1-Gewinns (vor Teilverkauf als Vorschau berechnet)."
-                    ),
+                    help="Dynamischer Stop Loss: Kaufkurs + 50% des T1-Gewinns.",
                 )
 
                 if signal_type == "success":
@@ -900,15 +918,11 @@ with tab4:
     st.subheader("📜 History & Ausgewertete Trades")
 
     if not historie_positionen:
-        st.info(
-            "Noch keine Teilverkäufe oder abgeschlossenen Trades in der Historie"
-            " vorhanden."
-        )
+        st.info("Noch keine Teilverkäufe oder abgeschlossenen Trades in der Historie vorhanden.")
     else:
         historie_liste = []
         for pos in historie_positionen:
             is_sold = pos.get("sold", False)
-            is_partially = pos.get("partially_sold", False)
             has_t1 = pos.get("t1_sell_price") is not None
             has_t2 = pos.get("t2_sell_price") is not None
 
@@ -917,95 +931,50 @@ with tab4:
             einsatz = buy_price * shares
             half_shares = shares / 2.0
 
-            buy_dt = pd.to_datetime(
-                pos.get("buy_date", datetime.now().strftime("%Y-%m-%d"))
-            )
+            buy_dt = pd.to_datetime(pos.get("buy_date", datetime.now().strftime("%Y-%m-%d")))
 
-            # -------------------------------------------------------------
-            # FALL 1: Komplettverkauf auf einmal (100% verkauft über T1)
-            # -------------------------------------------------------------
             if is_sold and has_t1 and not has_t2:
                 t1_price = float(pos["t1_sell_price"])
                 t1_gewinn_eur = (t1_price - buy_price) * shares
-                t1_gewinn_pct = (
-                    ((t1_price - buy_price) / buy_price) * 100
-                    if buy_price > 0
-                    else 0.0
-                )
+                t1_gewinn_pct = ((t1_price - buy_price) / buy_price) * 100 if buy_price > 0 else 0.0
                 t1_str = f"{t1_gewinn_eur:+.2f} € ({t1_gewinn_pct:+.2f}%)"
-
-                t2_str = "- "  # Bleibt leer bei Direkt-Komplettverkauf
-
+                t2_str = "- "
                 gesamt_gewinn_eur = t1_gewinn_eur
                 gesamt_gewinn_pct = t1_gewinn_pct
                 gesamt_str = f"{gesamt_gewinn_eur:+.2f} € ({gesamt_gewinn_pct:+.2f}%)"
-
                 status_label = "✅ Vollständig verkauft"
                 v_datum_str = pos.get("t1_sell_date", "-")
-                end_dt = (
-                    pd.to_datetime(v_datum_str)
-                    if v_datum_str != "-"
-                    else buy_dt
-                )
+                end_dt = pd.to_datetime(v_datum_str) if v_datum_str != "-" else buy_dt
 
-            # -------------------------------------------------------------
-            # FALL 2: 2-Tranchen-Verkauf abgeschlossen (T1 + T2 realisiert)
-            # -------------------------------------------------------------
             elif is_sold and has_t2:
                 t1_price = float(pos.get("t1_sell_price", buy_price))
                 t2_price = float(pos.get("t2_sell_price", buy_price))
 
                 t1_gewinn_eur = (t1_price - buy_price) * half_shares
-                t1_gewinn_pct = (
-                    ((t1_price - buy_price) / buy_price) * 100
-                    if buy_price > 0
-                    else 0.0
-                )
+                t1_gewinn_pct = ((t1_price - buy_price) / buy_price) * 100 if buy_price > 0 else 0.0
                 t1_str = f"{t1_gewinn_eur:+.2f} € ({t1_gewinn_pct:+.2f}%)"
 
                 t2_gewinn_eur = (t2_price - buy_price) * half_shares
-                t2_gewinn_pct = (
-                    ((t2_price - buy_price) / buy_price) * 100
-                    if buy_price > 0
-                    else 0.0
-                )
+                t2_gewinn_pct = ((t2_price - buy_price) / buy_price) * 100 if buy_price > 0 else 0.0
                 t2_str = f"{t2_gewinn_eur:+.2f} € ({t2_gewinn_pct:+.2f}%)"
 
                 gesamt_gewinn_eur = t1_gewinn_eur + t2_gewinn_eur
-                gesamt_gewinn_pct = (
-                    (gesamt_gewinn_eur / einsatz) * 100 if einsatz > 0 else 0.0
-                )
+                gesamt_gewinn_pct = (gesamt_gewinn_eur / einsatz) * 100 if einsatz > 0 else 0.0
                 gesamt_str = f"{gesamt_gewinn_eur:+.2f} € ({gesamt_gewinn_pct:+.2f}%)"
 
                 status_label = "✅ Vollständig verkauft"
-                v_datum_str = pos.get(
-                    "t2_sell_date", pos.get("t1_sell_date", "-")
-                )
-                end_dt = (
-                    pd.to_datetime(v_datum_str)
-                    if v_datum_str != "-"
-                    else buy_dt
-                )
+                v_datum_str = pos.get("t2_sell_date", pos.get("t1_sell_date", "-"))
+                end_dt = pd.to_datetime(v_datum_str) if v_datum_str != "-" else buy_dt
 
-            # -------------------------------------------------------------
-            # FALL 3: Laufender Teilverkauf (T1 realisiert, Rest noch aktiv)
-            # -------------------------------------------------------------
             else:
                 t1_price = float(pos.get("t1_sell_price", buy_price))
                 t1_gewinn_eur = (t1_price - buy_price) * half_shares
-                t1_gewinn_pct = (
-                    ((t1_price - buy_price) / buy_price) * 100
-                    if buy_price > 0
-                    else 0.0
-                )
+                t1_gewinn_pct = ((t1_price - buy_price) / buy_price) * 100 if buy_price > 0 else 0.0
                 t1_str = f"{t1_gewinn_eur:+.2f} € ({t1_gewinn_pct:+.2f}%)"
-
-                t2_str = "- "  # Bleibt leer, da T2 noch aktiv ist
-
+                t2_str = "- "
                 gesamt_gewinn_eur = t1_gewinn_eur
-                gesamt_gewinn_pct = t1_gewinn_pct  # %Gewinn entspricht exakt T1
+                gesamt_gewinn_pct = t1_gewinn_pct
                 gesamt_str = f"{gesamt_gewinn_eur:+.2f} € ({gesamt_gewinn_pct:+.2f}%)"
-
                 status_label = "🟡 Teilverkauft (Rest aktiv)"
                 v_datum_str = pos.get("t1_sell_date", "-")
                 end_dt = (
@@ -1018,9 +987,7 @@ with tab4:
 
             historie_liste.append({
                 "ISIN": pos["isin"],
-                "Name / Ticker": (
-                    f"{pos.get('name', pos['ticker'])} ({pos['ticker']})"
-                ),
+                "Name / Ticker": f"{pos.get('name', pos['ticker'])} ({pos['ticker']})",
                 "Einsatz": f"{einsatz:.2f} €",
                 "Gesamtgewinn": gesamt_str,
                 "Gewinn Tranche 1": t1_str,
@@ -1035,9 +1002,6 @@ with tab4:
         if "Verkaufsdatum" in df_hist.columns:
             df_hist = df_hist.sort_values(by="Verkaufsdatum", ascending=False)
 
-        # -------------------------------------------------------------
-        # PASTELL HEATMAP STYLING (HELL & SOFT, 2,5 % SCHRITTE)
-        # -------------------------------------------------------------
         def style_historie_table(df):
             styles = pd.DataFrame("", index=df.index, columns=df.columns)
             target_cols = ["Gesamtgewinn", "Gewinn Tranche 1", "Gewinn Tranche 2"]
@@ -1052,7 +1016,6 @@ with tab4:
 
                 pct = float(match.group(1))
 
-                # --- NEGATIV-BEREICHE (Sehr softe Rot/Rosa-Töne) ---
                 if pct < -10.0:
                     return "background-color: #f4bebe; color: #5c1d17; font-weight: bold;"
                 elif -10.0 <= pct < -7.5:
@@ -1063,8 +1026,6 @@ with tab4:
                     return "background-color: #fdf2f2; color: #5c1d17; font-weight: bold;"
                 elif -2.5 <= pct < 0.0:
                     return "background-color: #fff9f9; color: #5c1d17; font-weight: bold;"
-
-                # --- POSITIV-BEREICHE (Helle Mint- & Pastell-Töne) ---
                 elif 0.0 <= pct < 2.5:
                     return "background-color: #f4fbf7; color: #0e3a1d; font-weight: bold;"
                 elif 2.5 <= pct < 5.0:
@@ -1081,7 +1042,7 @@ with tab4:
                     return "background-color: #76cea1; color: #082813; font-weight: bold;"
                 elif 17.5 <= pct < 20.0:
                     return "background-color: #5ec38f; color: #04190b; font-weight: bold;"
-                else:  # >= 20.0 %
+                else:
                     return "background-color: #45b77d; color: #04190b; font-weight: bold;"
 
             for col in target_cols:
