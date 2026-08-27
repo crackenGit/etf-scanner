@@ -104,7 +104,9 @@ def parse_isin_file(filename="isin.txt"):
 @st.cache_data(ttl=86400)  # 24h Caching zur Vermeidung von Rate Limits
 def isin_zu_ticker(isin):
     url = f"https://query2.finance.yahoo.com/v1/finance/search?q={isin}"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    }
     try:
         response = requests.get(url, headers=headers, timeout=5)
         if response.status_code == 200:
@@ -139,10 +141,17 @@ def berechne_indikatoren(isin):
 
     data, erfolgreicher_ticker = None, None
     for ticker_symbol in kandidaten:
+        if not ticker_symbol:
+            continue
         try:
-            df = yf.download(ticker_symbol, period="2y", progress=False)
+            t_obj = yf.Ticker(ticker_symbol)
+            df = t_obj.history(period="2y", auto_adjust=False)
+
+            # Sicherstellen, dass keine MultiIndex-Spalten vorhanden sind
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
+
+            df = df.dropna(subset=["Close"])
 
             if not df.empty and len(df) >= 200:
                 data, erfolgreicher_ticker = df, ticker_symbol
@@ -158,6 +167,13 @@ def berechne_indikatoren(isin):
         if erfolgreicher_ticker:
             t_obj = yf.Ticker(erfolgreicher_ticker)
             fi = getattr(t_obj, "fast_info", None)
+            
+            # Aktualisierung des letzten Kurses aus Live-Daten
+            if fi and getattr(fi, "last_price", None):
+                live_price = fi.last_price
+                if live_price and not pd.isna(live_price) and live_price > 0:
+                    data.loc[data.index[-1], "Close"] = float(live_price)
+
             if fi and getattr(fi, "last_trade_time", None):
                 ts = pd.to_datetime(
                     fi.last_trade_time, unit="s", utc=True
@@ -170,12 +186,15 @@ def berechne_indikatoren(isin):
                     if last_ts.tzinfo is not None:
                         last_ts = last_ts.tz_convert("Europe/Berlin")
                     yahoo_zeit = last_ts.strftime("%H:%M Uhr (%d.%m.)")
+                    last_price = intraday["Close"].iloc[-1]
+                    if not pd.isna(last_price) and last_price > 0:
+                        data.loc[data.index[-1], "Close"] = float(last_price)
     except Exception:
         pass
 
-    close = data["Close"].dropna()
-    low = data["Low"].dropna() if "Low" in data else close
-    high = data["High"].dropna() if "High" in data else close
+    close = data["Close"].ffill().dropna()
+    low = data["Low"].ffill().dropna() if "Low" in data else close
+    high = data["High"].ffill().dropna() if "High" in data else close
 
     # 52-Wochen-Hoch (ca. 252 Handelstage)
     high_52w = float(high.tail(252).max()) if len(high) >= 252 else float(high.max())
@@ -340,7 +359,8 @@ if "kauf_signale" not in st.session_state:
         data, ticker = berechne_indikatoren(item["isin"])
         return item, data, ticker
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    # max_workers=4 reduziert Rate-Limiting-Sperren von Yahoo Finance
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(load_etf_data, item) for item in etfs]
 
         for future in as_completed(futures):
