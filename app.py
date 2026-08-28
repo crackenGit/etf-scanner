@@ -56,30 +56,30 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # ==========================================
 # MATCHING & ISIN LISTE
 # ==========================================
-MANUAL_TICKERS = {
-    "LU2090063327": ["SEMD.MI", "6B7A.DE", "CHIP.PA"],
-    "IE00BCHWNV48": ["XIND.MI", "XIND.L", "XCHA.DE", "XINW.DE"],
-    "IE00BLCHJB90": ["WCLD.L", "WCLD.DE"],
-    "IE000E7EI9P0": ["WELU.DE"],
-    "IE00BJ5JNZ06": ["CBUF.DE", "CBUF.L"],
-    "IE00BLPK3577": ["CYBR.L", "ISPY.DE"],
-    "IE00B3Q19T94": ["IUFS.L", "S5FP.DE"],
-    "IE00B5MTWD60": ["WIFI.L", "QDVE.DE"],
-    "IE000KYX7IP4": ["FINX.L"],
-    "IE000NXF88S1": ["ENRG.L"],
-    "IE000J0LN0R5": ["WNRG.L"],
-    "IE00BJ5JP105": ["INRG.L", "IQQH.DE"],
-    "IE00BM67HN00": ["XDWS.DE", "XDWG.L"],
-    "IE00BWBXM279": ["WCOS.L", "STPL.DE"],
-    "IE00BM67HR13": ["XDWD.DE", "XDWG.L"],
-    "IE00BWBXM386": ["ZPDD.DE", "SXLY.L"],
-    "IE000I8KRLL9": ["SEC0.DE", "SEMI.AS"],
-    "IE0003A512E4": ["AAKI.DE"],
-    "IE00BGV5VR99": ["XMOV.DE"],
-    "IE00BCHWNS19": ["XUEN.DE"],
-    "IE00BM67HL84": ["XDWF.DE"],
-    "IE00BKLF1R75": ["W1TA.DE"],
-}
+#MANUAL_TICKERS = {
+#    "LU2090063327": ["SEMD.MI", "6B7A.DE", "CHIP.PA"],
+#    "IE00BCHWNV48": ["XIND.MI", "XIND.L", "XCHA.DE", "XINW.DE"],
+#    "IE00BLCHJB90": ["WCLD.L", "WCLD.DE"],
+#    "IE000E7EI9P0": ["WELU.DE"],
+#    "IE00BJ5JNZ06": ["CBUF.DE", "CBUF.L"],
+#    "IE00BLPK3577": ["CYBR.L", "ISPY.DE"],
+#    "IE00B3Q19T94": ["IUFS.L", "S5FP.DE"],
+#    "IE00B5MTWD60": ["WIFI.L", "QDVE.DE"],
+#    "IE000KYX7IP4": ["FINX.L"],
+#    "IE000NXF88S1": ["ENRG.L"],
+#    "IE000J0LN0R5": ["WNRG.L"],
+#    "IE00BJ5JP105": ["INRG.L", "IQQH.DE"],
+#    "IE00BM67HN00": ["XDWS.DE", "XDWG.L"],
+#    "IE00BWBXM279": ["WCOS.L", "STPL.DE"],
+#    "IE00BM67HR13": ["XDWD.DE", "XDWG.L"],
+#    "IE00BWBXM386": ["ZPDD.DE", "SXLY.L"],
+#    "IE000I8KRLL9": ["SEC0.DE", "SEMI.AS"],
+#    "IE0003A512E4": ["AAKI.DE"],
+#    "IE00BGV5VR99": ["XMOV.DE"],
+#    "IE00BCHWNS19": ["XUEN.DE"],
+#    "IE00BM67HL84": ["XDWF.DE"],
+#    "IE00BKLF1R75": ["W1TA.DE"],
+#}
 
 
 def parse_isin_file(filename="isin.txt"):
@@ -92,10 +92,23 @@ def parse_isin_file(filename="isin.txt"):
                 if not line or line.startswith("#"):
                     if line.startswith("#"):
                         aktueller_sektor = (
-                            line.lstrip("#").strip().capitalize()
+                            line.lstrip("#").strip()
                         )
                     continue
-                etf_liste.append({"sektor": aktueller_sektor, "isin": line})
+                
+                if ";" in line:
+                    isin, ticker = line.split(";", 1)
+                    etf_liste.append({
+                        "sektor": aktueller_sektor,
+                        "isin": isin.strip(),
+                        "ticker": ticker.strip(),
+                    })
+                else:
+                    etf_liste.append({
+                        "sektor": aktueller_sektor,
+                        "isin": line.strip(),
+                        "ticker": None,
+                    })
     except FileNotFoundError:
         return []
     return etf_liste
@@ -130,12 +143,14 @@ def isin_zu_ticker(isin):
 
 
 @st.cache_data(ttl=300)
-def berechne_indikatoren(isin):
-    kandidaten = (
-        MANUAL_TICKERS[isin]
-        if isin in MANUAL_TICKERS
-        else ([isin_zu_ticker(isin)] if isin_zu_ticker(isin) else [])
-    )
+def berechne_indikatoren(isin, ticker=None):
+    if ticker:
+        kandidaten = [ticker]
+    elif isin in MANUAL_TICKERS:
+        kandidaten = MANUAL_TICKERS[isin]
+    else:
+        t = isin_zu_ticker(isin)
+        kandidaten = [t] if t else []
 
     data, erfolgreicher_ticker = None, None
     for ticker_symbol in kandidaten:
@@ -323,7 +338,7 @@ portfolio_isins = [p["isin"] for p in PORTFOLIO if not p.get("sold", False)]
 etfs_isins = {e["isin"] for e in etfs}
 for p in PORTFOLIO:
     if p["isin"] not in etfs_isins:
-        etfs.append({"sektor": "Portfolio", "isin": p["isin"]})
+        etfs.append({"sektor": "Portfolio", "isin": p["isin"], "ticker": p.get("ticker")})
 
 st.sidebar.info(f"📋 **{len(etfs)} ETFs** werden überwacht.")
 
@@ -337,10 +352,10 @@ if "kauf_signale" not in st.session_state:
     completed_count = 0
 
     def load_etf_data(item):
-        data, ticker = berechne_indikatoren(item["isin"])
+        data, ticker = berechne_indikatoren(item["isin"], item.get("ticker"))
         return item, data, ticker
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(load_etf_data, item) for item in etfs]
 
         for future in as_completed(futures):
@@ -698,8 +713,8 @@ with tab3:
 
     for pos in aktive_positionen:
         try:
-            # Zentrale Kursdaten über die ISIN beziehen
-            data, ticker_used = berechne_indikatoren(pos["isin"])
+            # Zentrale Kursdaten beziehen
+            data, ticker_used = berechne_indikatoren(pos["isin"], pos.get("ticker"))
 
             if not data:
                 st.error(f"Keine Kursdaten für {pos['name']} ({pos['isin']}) verfügbar.")
