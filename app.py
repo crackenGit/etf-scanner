@@ -54,32 +54,20 @@ warnings.filterwarnings("ignore")
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 # ==========================================
-# MATCHING & ISIN LISTE
+# MANUELLE TICKER-ZUORDNUNG (Fallback)
 # ==========================================
-#MANUAL_TICKERS = {
-#    "LU2090063327": ["SEMD.MI", "6B7A.DE", "CHIP.PA"],
-#    "IE00BCHWNV48": ["XIND.MI", "XIND.L", "XCHA.DE", "XINW.DE"],
-#    "IE00BLCHJB90": ["WCLD.L", "WCLD.DE"],
-#    "IE000E7EI9P0": ["WELU.DE"],
-#    "IE00BJ5JNZ06": ["CBUF.DE", "CBUF.L"],
-#    "IE00BLPK3577": ["CYBR.L", "ISPY.DE"],
-#    "IE00B3Q19T94": ["IUFS.L", "S5FP.DE"],
-#    "IE00B5MTWD60": ["WIFI.L", "QDVE.DE"],
-#    "IE000KYX7IP4": ["FINX.L"],
-#    "IE000NXF88S1": ["ENRG.L"],
-#    "IE000J0LN0R5": ["WNRG.L"],
-#    "IE00BJ5JP105": ["INRG.L", "IQQH.DE"],
-#    "IE00BM67HN00": ["XDWS.DE", "XDWG.L"],
-#    "IE00BWBXM279": ["WCOS.L", "STPL.DE"],
-#    "IE00BM67HR13": ["XDWD.DE", "XDWG.L"],
-#    "IE00BWBXM386": ["ZPDD.DE", "SXLY.L"],
-#    "IE000I8KRLL9": ["SEC0.DE", "SEMI.AS"],
-#    "IE0003A512E4": ["AAKI.DE"],
-#    "IE00BGV5VR99": ["XMOV.DE"],
-#    "IE00BCHWNS19": ["XUEN.DE"],
-#    "IE00BM67HL84": ["XDWF.DE"],
-#    "IE00BKLF1R75": ["W1TA.DE"],
-#}
+# Wird nur genutzt, wenn eine ISIN weder in isin.txt einen Ticker mitbringt
+# noch über die automatische Yahoo-Suche (isin_zu_ticker) aufgelöst werden kann.
+# Leer lassen, solange isin.txt für jede Zeile bereits einen passenden Ticker liefert.
+MANUAL_TICKERS = {}
+
+# ==========================================
+# SCANNER-KONFIGURATION (hier einfach anpassbar)
+# ==========================================
+KAUFSIGNAL_SCHWELLE = 75.0       # Dip Score, ab dem ein Kaufsignal markiert wird
+WATCHLIST_MIN_SCORE = 30.0       # ab diesem Score taucht ein ETF zusätzlich in der Watchlist auf
+MARKT_BENCHMARK_TICKER = "URTH"  # Breiter Referenzindex (iShares MSCI World). Alternative: "^STOXX" (Europa)
+REGIME_MALUS_FAKTOR = 0.8        # Dämpfung aller Scores, wenn der Referenzindex unter seinem GD200 liegt
 
 
 def parse_isin_file(filename="isin.txt"):
@@ -95,7 +83,7 @@ def parse_isin_file(filename="isin.txt"):
                             line.lstrip("#").strip()
                         )
                     continue
-                
+
                 if ";" in line:
                     isin, ticker = line.split(";", 1)
                     etf_liste.append({
@@ -140,6 +128,28 @@ def isin_zu_ticker(isin):
     except Exception:
         pass
     return None
+
+
+@st.cache_data(ttl=3600)
+def markt_regime_ok(benchmark_ticker=None):
+    """
+    Prüft, ob ein breiter Marktindex über seinem eigenen GD200 liegt.
+    Dient als globaler Kontextfilter: In einer echten Marktkorrektur sollen
+    Kaufsignale seltener werden, auch wenn ein einzelner ETF isoliert
+    betrachtet noch "sauber" aussieht.
+    """
+    ticker = benchmark_ticker or MARKT_BENCHMARK_TICKER
+    try:
+        df = yf.download(ticker, period="1y", progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        close = df["Close"].dropna()
+        if len(close) < 200:
+            return True  # nicht genug Historie -> im Zweifel keinen Malus anwenden
+        gd200 = close.rolling(window=200).mean()
+        return bool(float(close.iloc[-1]) > float(gd200.iloc[-1]))
+    except Exception:
+        return True  # Fail-safe: bei Datenproblem keinen Malus anwenden
 
 
 @st.cache_data(ttl=300)
@@ -205,11 +215,29 @@ def berechne_indikatoren(isin, ticker=None):
     avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
     rsi = 100 - (100 / (1 + (avg_gain / avg_loss)))
 
+    # --- ATR(14) für den volatilitätsnormalisierten Turnaround-Score ---
+    prev_close = close.shift(1)
+    true_range = pd.concat(
+        [
+            (high - low),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    atr14 = true_range.rolling(window=14).mean()
+
     ag_today = float(avg_gain.iloc[-1])
     al_today = float(avg_loss.iloc[-1])
     c_today = float(close.iloc[-1])
     tages_tief = float(low.iloc[-1]) if not low.empty else c_today
     rsi_today = float(rsi.iloc[-1])
+    atr14_heute = (
+        float(atr14.iloc[-1])
+        if not atr14.empty and not pd.isna(atr14.iloc[-1])
+        else 0.0
+    )
+    vortages_hoch = float(high.iloc[-2]) if len(high) >= 2 else c_today
 
     if rsi_today > 35.0:
         drop_needed = (169.0 * ag_today - 91.0 * al_today) / 7.0
@@ -233,28 +261,56 @@ def berechne_indikatoren(isin, ticker=None):
     rsi_heute = rsi_today
     rsi_gestern = float(rsi.iloc[-2]) if len(rsi) >= 2 else rsi_heute
 
-    intraday_turnaround = (rsi_heute < 35.0) and (c_today >= tages_tief * 1.005)
-    vortag_turnaround = (rsi_gestern < 35.0) and (rsi_heute > rsi_gestern)
+    # ==========================================
+    # NEUER DIP SCORE (max. ca. 100 Punkte)
+    # In klar begrenzte Teil-Scores aufgeteilt, damit ein hoher Gesamtwert
+    # automatisch bedeutet, dass ALLE Kriterien mitspielen - inkl. Turnaround.
+    # ==========================================
 
-    turnaround_erkannt = intraday_turnaround or vortag_turnaround
-    is_fallendes_messer = not turnaround_erkannt
+    # 1) RSI-Überverkauft-Tiefe (max. 20 Punkte)
+    rsi_score = min(20.0, max(0.0, (45.0 - rsi_today)) * 1.5)
 
-    rsi_score = max(0, (45 - rsi_today)) * 1.5
-    ema50_upside_pct = max(0, ((ema50_heute - c_today) / c_today) * 100)
-    ema50_score = ema50_upside_pct * 2.0
-
-    rsi35_dist_abs = abs(rsi35_preis - c_today) / c_today * 100
-    rsi35_proximity_score = max(0, 15 - rsi35_dist_abs) * 1.5
-
-    gd200_buffer_pct = ((c_today - gd200_heute) / gd200_heute) * 100
-    if gd200_buffer_pct > 0:
-        gd200_score = min(25.0, gd200_buffer_pct * 1.2)
-    else:
-        gd200_score = -20.0
-
-    dip_score = round(
-        rsi_score + ema50_score + rsi35_proximity_score + gd200_score, 1
+    # 2) Trend intakt: EMA50 > GD200 UND GD200 steigt (max. 15 Punkte)
+    trend_score = (7.5 if ema50_heute > gd200_heute else 0.0) + (
+        7.5 if gd200_steigt else 0.0
     )
+
+    # 3) Sicherheitspuffer über GD200 (max. 15 Punkte)
+    gd200_buffer_pct = (
+        ((c_today - gd200_heute) / gd200_heute) * 100 if gd200_heute else 0.0
+    )
+    gd200_score = min(15.0, max(0.0, gd200_buffer_pct) * 0.9)
+
+    # 4) Mean-Reversion-Potenzial bis zur EMA50 (max. 15 Punkte)
+    ema50_upside_pct = max(0.0, ((ema50_heute - c_today) / c_today) * 100)
+    ema50_score = min(15.0, ema50_upside_pct * 1.2)
+
+    # 5) Turnaround-Qualität (max. 35 Punkte - größte Einzelkomponente)
+    #    a) ATR-normalisierter Bounce vom Tagestief statt fixer Prozentschwelle
+    bounce_atr_ratio = (
+        (c_today - tages_tief) / atr14_heute if atr14_heute > 0 else 0.0
+    )
+    turnaround_bounce_score = min(15.0, max(0.0, bounce_atr_ratio) * 30.0)
+
+    #    b) RSI-Richtungswechsel (Tagesdelta)
+    turnaround_rsi_score = min(10.0, max(0.0, rsi_heute - rsi_gestern) * 2.0)
+
+    #    c) Bestätigungs-Bonus: Schlusskurs über Vortageshoch
+    turnaround_bestaetigung = 10.0 if c_today > vortages_hoch else 0.0
+
+    turnaround_score = min(
+        35.0,
+        turnaround_bounce_score + turnaround_rsi_score + turnaround_bestaetigung,
+    )
+
+    basis_score = rsi_score + trend_score + gd200_score + ema50_score  # max. 65
+    dip_score_roh = basis_score + turnaround_score  # max. 100
+
+    # 6) Marktregime-Filter: dämpft ALLE Scores, wenn der breite Markt selbst
+    #    unter seinem GD200 liegt (Schutz vor "alles fällt gleichzeitig")
+    regime_ok = markt_regime_ok()
+    regime_multiplier = 1.0 if regime_ok else REGIME_MALUS_FAKTOR
+    dip_score = round(dip_score_roh * regime_multiplier, 1)
 
     return {
         "close": c_today,
@@ -267,7 +323,12 @@ def berechne_indikatoren(isin, ticker=None):
         "gd200_steigt": gd200_steigt,
         "perf_1w": perf_1w,
         "dip_score": dip_score,
-        "is_fallendes_messer": is_fallendes_messer,
+        "rsi_score": round(rsi_score, 1),
+        "trend_score": round(trend_score, 1),
+        "gd200_score": round(gd200_score, 1),
+        "ema50_score": round(ema50_score, 1),
+        "turnaround_score": round(turnaround_score, 1),
+        "regime_ok": regime_ok,
         "yahoo_zeit": yahoo_zeit,
     }, erfolgreicher_ticker
 
@@ -278,39 +339,54 @@ def berechne_indikatoren(isin, ticker=None):
 st.title("📈 ETF Dip-Scanner & Portfolio-Manager")
 
 with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
-    st.markdown("""
-    ### 🔄 Kriterien für ein Kaufsignal
-    1. **RSI < 35:** Der Sektor-ETF ist kurzfristig überverkauft.
-    2. **Kurs > GD200:** Der ETF notiert über seiner langfristigen 200-Tage-Linie.
-    3. **Intakter Grundtrend:** 
-        * **EMA50 > GD200:** Mittelfristiger Trend liegt über dem Langfristtrend.
-        * **GD200 steigt an:** GD200 heute ist höher als der GD200 vor 10 Handelstagen (`GD200 v10T`).
-    4. **Turnaround-Logik bestätigt:** Kein fallendes Messer!
-    
-    ### 🔄 Turnaround-Logik (Erholung vor dem Kauf)
-    Ein ETF mit **RSI < 35** ist erst dann ein **echtes Kaufsignal**, wenn der Verkaufsdruck nachlässt und Käufer in den Markt zurückkehren.
-    
-    Das Skript prüft automatisch zwei Wege:
-    
-    1. **Intraday-Turnaround (Einstieg am selben Tag):**
-       * Der RSI liegt aktuell **unter 35** **UND** der Kurs hat sich um mindestens **+0,5 % vom heutigen Tagestief erholt**.
-    
-    2. **Vortags-Turnaround (Klassischer V-Haken):**
-       * Der RSI lag **gestern bereits unter 35** **UND** der RSI ist heute höher als gestern (`RSI_heute > RSI_gestern`).
-    
-    *Solange keiner dieser beiden Fälle zutrifft, gilt der Wert als **'fallendes Messer'** und das Kaufsignal wird blockiert.*
+    st.markdown(f"""
+    ### 🎯 Ein Kaufsignal = Dip Score ≥ {KAUFSIGNAL_SCHWELLE:.0f}
+    Es gibt keinen separaten Ja/Nein-Filter mehr - alle bisherigen Kriterien
+    (RSI, Trend, Turnaround, Marktumfeld) fließen in **einen einzigen Score**
+    von maximal ca. 100 Punkten ein. Je höher der Score, desto überzeugender
+    das Signal.
+
+    | Komponente | Max. Punkte | Was gemessen wird |
+    |---|---|---|
+    | RSI-Überverkauft-Tiefe | 20 | Wie weit der RSI unter 45 liegt |
+    | Trend intakt | 15 | EMA50 > GD200 **und** GD200 steigt |
+    | Puffer über GD200 | 15 | Sicherheitsabstand zur langfristigen Stütze |
+    | Mean-Reversion-Potenzial | 15 | Rebound-Distanz bis zur EMA50 |
+    | **Turnaround-Qualität** | **35** | Echte Erholung statt fallendes Messer |
+
+    **Wichtig:** Ohne jegliche Turnaround-Bestätigung sind maximal **65** der
+    100 Punkte erreichbar (RSI + Trend + GD200-Puffer + EMA50-Potenzial).
+    Ein Kaufsignal ab {KAUFSIGNAL_SCHWELLE:.0f} Punkten ist damit rechnerisch
+    nur möglich, wenn zusätzlich ein relevanter Teil der 35 Turnaround-Punkte
+    dazukommt.
+
+    ### 🔄 Die drei Turnaround-Bausteine
+    1. **ATR-normalisierter Bounce vom Tagestief** (bis 15 Pkt.) - die Erholung
+       wird relativ zur normalen Tagesschwankung (ATR14) des jeweiligen ETFs
+       bewertet, nicht mit einer fixen Prozentzahl für alle ETFs gleichermaßen.
+    2. **RSI-Richtungswechsel** (bis 10 Pkt.) - je stärker der RSI von gestern
+       auf heute dreht, desto mehr Punkte.
+    3. **Bestätigungs-Bonus** (10 Pkt.) - Schlusskurs über dem Vortageshoch,
+       also ein echter Anschlusstag statt nur ein kurzer Reflex vom Tagestief.
+
+    ### 🌍 Marktregime-Filter
+    Zusätzlich wird geprüft, ob der breite Referenzindex (`{MARKT_BENCHMARK_TICKER}`)
+    selbst über seinem GD200 notiert. Falls nicht, werden **alle** Scores mit
+    ×{REGIME_MALUS_FAKTOR} multipliziert - in einer echten Marktkorrektur werden
+    Kaufsignale dadurch automatisch seltener, auch wenn ein einzelner ETF
+    isoliert betrachtet noch sauber aussieht.
     """)
 
 with st.expander("📊 Wie werden Kauf- & Verkaufstranchen gesetzt? (Regelwerk)", expanded=False):
     col_t1, col_t2 = st.columns(2)
-    
+
     with col_t1:
         st.markdown("""
         ### 🟢 Tranche 1 (50 % Verkauf)
         * **Ziel:** Erreichen der **EMA50-Linie** (Mean Reversion).
         * **Sinn:** Schnelle Teilgewinnmitnahme nach dem Dip zur Risiko-Reduzierung.
         """)
-        
+
     with col_t2:
         st.markdown("""
         ### 🎯 Tranche 2 (50 % Verkauf)
@@ -328,8 +404,8 @@ st.sidebar.header("⚙️ Steuerung")
 
 if st.sidebar.button("🔄 Daten aktualisieren", use_container_width=True):
     st.cache_data.clear()
-    if "kauf_signale" in st.session_state:
-        del st.session_state["kauf_signale"]
+    if "watchlist_signale" in st.session_state:
+        del st.session_state["watchlist_signale"]
     st.rerun()
 
 etfs = parse_isin_file("isin.txt")
@@ -343,8 +419,8 @@ for p in PORTFOLIO:
 st.sidebar.info(f"📋 **{len(etfs)} ETFs** werden überwacht.")
 
 # --- PARALLELER DATEN-SCANNER ---
-if "kauf_signale" not in st.session_state:
-    kauf_signale, watchlist_signale, fehlgeschlagene_etfs = [], [], []
+if "watchlist_signale" not in st.session_state:
+    watchlist_signale, fehlgeschlagene_etfs = [], []
     letzter_zeitstempel = "k.A."
     progress_bar = st.progress(0, text="⚡ Lade Kursdaten (Parallel-Scan)...")
 
@@ -378,27 +454,30 @@ if "kauf_signale" not in st.session_state:
             if data.get("yahoo_zeit") and data["yahoo_zeit"] != "k.A.":
                 letzter_zeitstempel = data["yahoo_zeit"]
 
-            c, rsi, rsi35, gd200, gd200_10d, ema50, gd200_steigt, perf_1w, score, messer = (
-                data["close"],
-                data["rsi"],
-                data["rsi35_preis"],
-                data["gd200"],
-                data["gd200_vor_10d"],
-                data["ema50"],
-                data["gd200_steigt"],
-                data["perf_1w"],
-                data["dip_score"],
-                data["is_fallendes_messer"],
-            )
+            c = data["close"]
+            rsi = data["rsi"]
+            rsi35 = data["rsi35_preis"]
+            gd200 = data["gd200"]
+            gd200_10d = data["gd200_vor_10d"]
+            ema50 = data["ema50"]
+            gd200_steigt = data["gd200_steigt"]
+            perf_1w = data["perf_1w"]
+            dip_score = data["dip_score"]
+            turnaround_score = data["turnaround_score"]
+            regime_ok = data["regime_ok"]
 
-            grundtrend_ok = ema50 > gd200 and gd200_steigt
             gd200_abstand = ((gd200 - c) / c) * 100
             gd200_10d_abstand = ((gd200_10d - c) / c) * 100
             rsi35_abstand = ((rsi35 - c) / c) * 100
 
-            is_kauf = grundtrend_ok and (rsi < 35) and (c > gd200) and (not messer)
-            is_watch = rsi < 40 and c >= (gd200 * 0.97)
-            is_in_portfolio = item["isin"] in portfolio_isins
+            ist_kaufsignal = dip_score >= KAUFSIGNAL_SCHWELLE
+            ist_in_portfolio = item["isin"] in portfolio_isins
+            ist_watchlist_kandidat = (
+                ist_kaufsignal
+                or ist_in_portfolio
+                or rsi < 40
+                or dip_score >= WATCHLIST_MIN_SCORE
+            )
 
             entry = {
                 "Sektor": item["sektor"],
@@ -415,20 +494,18 @@ if "kauf_signale" not in st.session_state:
                 "GD200_steigt": gd200_steigt,
                 "EMA50": ema50,
                 "1W Perf.": perf_1w,
-                "Dip Score": score,
+                "Dip Score": dip_score,
+                "Turnaround Score": turnaround_score,
+                "Marktregime_OK": regime_ok,
                 "Zeitstempel": data["yahoo_zeit"],
-                "Ist_Kaufsignal": is_kauf,
-                "Ist_Portfolio": is_in_portfolio,
+                "Ist_Kaufsignal": ist_kaufsignal,
+                "Ist_Portfolio": ist_in_portfolio,
             }
 
-            if is_kauf:
-                kauf_signale.append(entry)
-
-            if is_kauf or is_watch or is_in_portfolio:
+            if ist_watchlist_kandidat:
                 watchlist_signale.append(entry)
 
     progress_bar.empty()
-    st.session_state["kauf_signale"] = kauf_signale
     st.session_state["watchlist_signale"] = watchlist_signale
     st.session_state["fehlgeschlagene_etfs"] = fehlgeschlagene_etfs
     st.session_state["letztes_update"] = letzter_zeitstempel
@@ -443,77 +520,47 @@ if failed_list:
         )
         st.dataframe(pd.DataFrame(failed_list), use_container_width=True, hide_index=True)
 
-# Aktive Positionen für Tab 3 ermitteln (noch nicht vollständig verkauft)
+# Aktive Positionen für Tab 2 ermitteln (noch nicht vollständig verkauft)
 aktive_positionen = [p for p in PORTFOLIO if not p.get("sold", False)]
 historie_positionen = [p for p in PORTFOLIO if p.get("partially_sold", False) or p.get("sold", False)]
 
 # TABS REGISTER
-tab1, tab2, tab3, tab4 = st.tabs([
-    f"🔥 Kaufsignale ({len(st.session_state.get('kauf_signale', []))})",
-    f"📋 Watchlist ({len(st.session_state.get('watchlist_signale', []))})",
+tab1, tab2, tab3 = st.tabs([
+    f"📋 Watchlist & Kaufsignale ({len(st.session_state.get('watchlist_signale', []))})",
     f"💼 Mein Portfolio ({len(aktive_positionen)})",
     f"📜 Historie ({len(historie_positionen)})",
 ])
 
-# --- TAB 1: KAUFSIGNALE ---
+# --- TAB 1: WATCHLIST & KAUFSIGNALE (konsolidiert) ---
 with tab1:
-    kauf = st.session_state.get("kauf_signale", [])
-    if kauf:
-        st.success(
-            f"**{len(kauf)} Kaufsignal(e) gefunden!** (RSI < 35, Kurs > GD200,"
-            " Turnaround bestätigt)"
-        )
-        for item in kauf:
-            rsi_bg = "#d4edda" if item["RSI"] < 35 else "#f8d7da"
-            rsi_fg = "#155724" if item["RSI"] < 35 else "#721c24"
-
-            gd_bg = "#d4edda" if item["GD200"] <= item["Kurs"] else "#f8d7da"
-            gd_fg = "#155724" if item["GD200"] <= item["Kurs"] else "#721c24"
-
-            with st.container(border=True):
-                col1, col2, col3, col4 = st.columns(4)
-
-                col1.markdown(f"**{item['Sektor']}**")
-                col1.caption(f"Ticker: `{item['Ticker']}` | {item['ISIN']}")
-
-                col2.markdown(
-                    f"""
-                    <div style="background-color: {rsi_bg}; color: {rsi_fg}; padding: 8px 12px; border-radius: 6px; text-align: center;">
-                        <div style="font-size: 0.75em; font-weight: bold; text-transform: uppercase;">Aktueller Kurs / RSI</div>
-                        <div style="font-size: 1.15em; font-weight: bold;">{item['Kurs']:.2f} €</div>
-                        <div style="font-size: 0.85em;">RSI: <b>{item['RSI']}</b> ({item.get('Zeitstempel', 'k.A.')})</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                col3.markdown(
-                    f"""
-                    <div style="background-color: {gd_bg}; color: {gd_fg}; padding: 8px 12px; border-radius: 6px; text-align: center;">
-                        <div style="font-size: 0.75em; font-weight: bold; text-transform: uppercase;">GD200</div>
-                        <div style="font-size: 1.15em; font-weight: bold;">{item['GD200']:.2f} €</div>
-                        <div style="font-size: 0.85em;">{item['GD200_Abstand']:+.2f}% zum Kurs</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                col4.metric(
-                    "Kauf-Limit für RSI <35",
-                    f"{item['RSI 35 Preis']:.2f} €",
-                    f"{item['RSI35_Abstand']:+.2f}% zum Kurs",
-                )
-    else:
-        st.info("Aktuell keine strikten Kaufsignale.")
-
-# --- TAB 2: WATCHLIST ---
-with tab2:
     watch = st.session_state.get("watchlist_signale", [])
-    if watch:
+
+    regime_status = watch[0]["Marktregime_OK"] if watch else True
+    if regime_status:
+        st.caption("🟢 **Marktregime:** Referenzindex über GD200 - normales Scoring.")
+    else:
         st.caption(
-            "💡 **Farblegende:** 🥇/🥈/🥉 **Top Dip-Scores** | 🟩 **GD200:**"
-            " Kurs > GD200 | 🟩 **GD200 v10T:** GD200 steigt | 🟩 **EMA50:**"
-            " EMA50 > GD200 | 🟩 **RSI:** RSI < 35 | 🟪 **Lila:** Im Portfolio"
+            f"🔴 **Marktregime:** Referenzindex unter GD200 - alle Scores werden mit "
+            f"×{REGIME_MALUS_FAKTOR} gedämpft (Kaufsignale seltener)."
+        )
+
+    anzahl_kaufsignale = sum(1 for e in watch if e["Ist_Kaufsignal"])
+
+    if watch:
+        if anzahl_kaufsignale > 0:
+            st.success(
+                f"**{anzahl_kaufsignale} Kaufsignal(e) gefunden!** "
+                f"(Dip Score ≥ {KAUFSIGNAL_SCHWELLE:.0f})"
+            )
+        else:
+            st.info(
+                f"Aktuell kein ETF über der Kaufsignal-Schwelle von "
+                f"{KAUFSIGNAL_SCHWELLE:.0f} Punkten."
+            )
+
+        st.caption(
+            "💡 **Farblegende:** 🥇/🥈/🥉 Top Dip-Scores | 🔥 Kaufsignal "
+            "(Score ≥ Schwelle) | 🟪 Lila: Im Portfolio"
         )
 
         col_sort1, col_sort2 = st.columns([2, 2])
@@ -521,8 +568,8 @@ with tab2:
             sort_kriterium = st.selectbox(
                 "🏆 Watchlist Sortierung nach:",
                 [
-                    "🔥 RSI (Niedrigster zuerst)",
                     "🚀 Dip-Potential Score",
+                    "🔥 RSI (Niedrigster zuerst)",
                     "🎯 Abstand zu RSI 35 Zielkurs",
                     "📊 Nähe zu GD200-Unterstützung",
                     "📉 Stärkster 1W-Rücksetzer",
@@ -560,14 +607,15 @@ with tab2:
         def format_ticker_rank(row):
             t = row["Ticker"]
             rank = row["Dip_Rank"]
+            praefix = "🔥 " if row["Ist_Kaufsignal"] else ""
             if rank == 1:
-                return f"🥇 {t}"
+                return f"{praefix}🥇 {t}"
             elif rank == 2:
-                return f"🥈 {t}"
+                return f"{praefix}🥈 {t}"
             elif rank == 3:
-                return f"🥉 {t}"
+                return f"{praefix}🥉 {t}"
             else:
-                return t
+                return f"{praefix}{t}"
 
         display_df = pd.DataFrame()
         display_df["Sektor"] = df_watch["Sektor"]
@@ -614,8 +662,12 @@ with tab2:
         display_df["1W Perf."] = df_watch["1W Perf."].map(
             lambda x: f"{x:+.2f}%"
         )
-        display_df["Dip Score"] = df_watch["Dip Score"].map(
-            lambda x: f"🔥 {x:.1f}"
+        display_df["Turnaround"] = df_watch["Turnaround Score"].map(
+            lambda x: f"{x:.0f}/35"
+        )
+        display_df["Dip Score"] = df_watch["Dip Score"].map(lambda x: f"{x:.1f}")
+        display_df["Signal"] = df_watch["Ist_Kaufsignal"].map(
+            lambda x: "🔥 KAUFEN" if x else "👀 Beobachten"
         )
         display_df["Zeitstempel"] = df_watch["Zeitstempel"]
 
@@ -625,73 +677,25 @@ with tab2:
                 row_raw = df_watch.loc[idx]
 
                 if row_raw.get("Ist_Portfolio", False):
+                    color = "background-color: #e8daef; color: #111111;"
+                elif row_raw["Ist_Kaufsignal"]:
+                    color = (
+                        "background-color: #d4edda; color: #155724;"
+                        " font-weight: bold;"
+                    )
+                else:
+                    color = ""
+
+                if color:
                     for col in df.columns:
-                        styles.loc[idx, col] = (
-                            "background-color: #e8daef; color: #111111;"
-                        )
-
-                if row_raw["GD200"] < row_raw["Kurs"]:
-                    styles.loc[idx, "GD200"] = (
-                        "background-color: #d4edda; color: #155724;"
-                        " font-weight: bold;"
-                    )
-                else:
-                    styles.loc[idx, "GD200"] = (
-                        "background-color: #f8d7da; color: #721c24;"
-                        " font-weight: bold;"
-                    )
-
-                if row_raw["GD200_steigt"]:
-                    styles.loc[idx, "GD200 v10T"] = (
-                        "background-color: #d4edda; color: #155724;"
-                        " font-weight: bold;"
-                    )
-                else:
-                    styles.loc[idx, "GD200 v10T"] = (
-                        "background-color: #f8d7da; color: #721c24;"
-                        " font-weight: bold;"
-                    )
-
-                if row_raw["EMA50"] > row_raw["GD200"]:
-                    styles.loc[idx, "EMA50"] = (
-                        "background-color: #d4edda; color: #155724;"
-                        " font-weight: bold;"
-                    )
-                else:
-                    styles.loc[idx, "EMA50"] = (
-                        "background-color: #f8d7da; color: #721c24;"
-                        " font-weight: bold;"
-                    )
-
-                if row_raw["RSI"] < 35.0:
-                    styles.loc[idx, "RSI"] = (
-                        "background-color: #d4edda; color: #155724;"
-                        " font-weight: bold;"
-                    )
-                else:
-                    styles.loc[idx, "RSI"] = (
-                        "background-color: #f8d7da; color: #721c24;"
-                        " font-weight: bold;"
-                    )
+                        styles.loc[idx, col] = color
 
                 dip_rank = row_raw.get("Dip_Rank", 999)
-                if dip_rank == 1:
+                if dip_rank in (1, 2, 3) and not row_raw["Ist_Kaufsignal"] and not row_raw.get("Ist_Portfolio", False):
+                    medaillen = {1: "#fef9e7", 2: "#f2f3f4", 3: "#fbeee6"}
                     styles.loc[idx, "Ticker"] = (
-                        "background-color: #fef9e7; color: #7d6608;"
-                        " font-weight: bold;"
+                        f"background-color: {medaillen[dip_rank]}; font-weight: bold;"
                     )
-                elif dip_rank == 2:
-                    styles.loc[idx, "Ticker"] = (
-                        "background-color: #f2f3f4; color: #424949;"
-                        " font-weight: bold;"
-                    )
-                elif dip_rank == 3:
-                    styles.loc[idx, "Ticker"] = (
-                        "background-color: #fbeee6; color: #7e5109;"
-                        " font-weight: bold;"
-                    )
-                else:
-                    styles.loc[idx, "Ticker"] = "font-weight: bold;"
 
                 styles.loc[idx, "Dip Score"] = (
                     "font-weight: bold; text-align: center;"
@@ -702,10 +706,10 @@ with tab2:
         styled_df = display_df.style.apply(style_watchlist_cells, axis=None)
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
     else:
-        st.write("Keine ETFs in der erweiterten Watchlist.")
+        st.write("Keine ETFs in der Watchlist.")
 
-# --- TAB 3: HIGH-END PORTFOLIO MANAGER ---
-with tab3:
+# --- TAB 2: HIGH-END PORTFOLIO MANAGER ---
+with tab2:
     st.subheader("📊 Aktive Positionen & Ausstiegs-Manager")
 
     if not aktive_positionen:
@@ -890,8 +894,8 @@ with tab3:
         except Exception as e:
             st.error(f"Fehler bei Position {pos.get('isin')}: {e}")
 
-# --- TAB 4: HISTORIE & GESCHLOSSENE / TEILVERKAUFTE TRADES ---
-with tab4:
+# --- TAB 3: HISTORIE & GESCHLOSSENE / TEILVERKAUFTE TRADES ---
+with tab3:
     st.subheader("📜 History & Ausgewertete Trades")
 
     if not historie_positionen:
