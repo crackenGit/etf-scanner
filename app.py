@@ -317,7 +317,21 @@ def berechne_indikatoren(isin, ticker=None):
     #    unter seinem GD200 liegt (Schutz vor "alles fällt gleichzeitig")
     regime_ok = markt_regime_ok()
     regime_multiplier = 1.0 if regime_ok else REGIME_MALUS_FAKTOR
-    dip_score = round(dip_score_roh * regime_multiplier, 1)
+
+    # 7) GD200-Bruch-Malus: dämpft den Score zusätzlich, wenn der Kurs schon
+    #    deutlich UNTER dem GD200 liegt - unabhängig davon, ob EMA50/GD200-
+    #    Richtung (Trend-Score) noch "grün" sind. Graduell statt hartem Cut:
+    #    0% Abstand = kein Abzug, ab 10% Abstand maximaler Abzug (Faktor 0.6).
+    gd200_bruch_pct = (
+        max(0.0, ((gd200_heute - c_today) / gd200_heute) * 100)
+        if gd200_heute
+        else 0.0
+    )
+    gd200_bruch_malus_faktor = max(0.6, 1.0 - (gd200_bruch_pct / 10.0) * 0.4)
+
+    dip_score = round(
+        dip_score_roh * regime_multiplier * gd200_bruch_malus_faktor, 1
+    )
 
     return {
         "close": c_today,
@@ -382,6 +396,14 @@ with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     ×{REGIME_MALUS_FAKTOR} multipliziert - in einer echten Marktkorrektur werden
     Kaufsignale dadurch automatisch seltener, auch wenn ein einzelner ETF
     isoliert betrachtet noch sauber aussieht.
+
+    ### 📉 GD200-Bruch-Malus
+    Der Trend-Score (EMA50 vs. GD200, GD200-Richtung) kann "grün" bleiben,
+    obwohl der Kurs selbst schon spürbar unter seinem GD200 liegt - der GD200
+    reagiert als 200-Tage-Schnitt sehr träge. Deshalb dämpft ein zusätzlicher,
+    graduell wirkender Malus den **gesamten** Score, je weiter der Kurs unter
+    dem GD200 liegt: kein Abzug bei Kurs auf/über GD200, bis zu ×0.6 (also
+    -40%) ab 10% Abstand oder mehr.
     """)
 
 with st.expander("📊 Wie werden Kauf- & Verkaufstranchen gesetzt? (Regelwerk)", expanded=False):
