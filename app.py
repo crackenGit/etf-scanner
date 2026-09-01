@@ -65,7 +65,7 @@ MANUAL_TICKERS = {}
 # SCANNER-KONFIGURATION (hier einfach anpassbar)
 # ==========================================
 KAUFSIGNAL_SCHWELLE = 75.0       # Dip Score, ab dem ein Kaufsignal markiert wird
-WATCHLIST_MIN_SCORE = 30.0       # ab diesem Score taucht ein ETF zusätzlich in der Watchlist auf
+RSI_WATCHLIST_SCHWELLE = 40.0    # Hauptkriterium: nur ETFs mit RSI darunter erscheinen in der Watchlist
 MARKT_BENCHMARK_TICKER = "URTH"  # Breiter Referenzindex (iShares MSCI World). Alternative: "^STOXX" (Europa)
 REGIME_MALUS_FAKTOR = 0.8        # Dämpfung aller Scores, wenn der Referenzindex unter seinem GD200 liegt
 
@@ -340,7 +340,7 @@ st.title("📈 ETF Dip-Scanner & Portfolio-Manager")
 
 with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     st.markdown(f"""
-    ### 🎯 Ein Kaufsignal! = Dip Score ≥ {KAUFSIGNAL_SCHWELLE:.0f}
+    ### 🎯 Ein Kaufsignal = Dip Score ≥ {KAUFSIGNAL_SCHWELLE:.0f}
     Es gibt keinen separaten Ja/Nein-Filter mehr - alle bisherigen Kriterien
     (RSI, Trend, Turnaround, Marktumfeld) fließen in **einen einzigen Score**
     von maximal ca. 100 Punkten ein. Je höher der Score, desto überzeugender
@@ -472,12 +472,9 @@ if "watchlist_signale" not in st.session_state:
 
             ist_kaufsignal = dip_score >= KAUFSIGNAL_SCHWELLE
             ist_in_portfolio = item["isin"] in portfolio_isins
-            ist_watchlist_kandidat = (
-                ist_kaufsignal
-                or ist_in_portfolio
-                or rsi < 40
-                or dip_score >= WATCHLIST_MIN_SCORE
-            )
+            # Hauptkriterium: RSI < 40. Portfolio-Positionen erscheinen immer,
+            # unabhängig von ihren aktuellen Werten.
+            ist_watchlist_kandidat = (rsi < RSI_WATCHLIST_SCHWELLE) or ist_in_portfolio
 
             entry = {
                 "Sektor": item["sektor"],
@@ -560,7 +557,8 @@ with tab1:
 
         st.caption(
             "💡 **Farblegende:** 🥇/🥈/🥉 Top Dip-Scores | 🔥 Kaufsignal "
-            "(Score ≥ Schwelle) | 🟪 Lila: Im Portfolio"
+            "(Score ≥ Schwelle) | 🟪 Lila: Im Portfolio | "
+            "GD200 & GD200 v10T: 🟩 klar drüber/steigend, ⬜ knapp (≤1%), 🟥 drunter/fallend"
         )
 
         col_sort1, col_sort2 = st.columns([2, 2])
@@ -696,6 +694,35 @@ with tab1:
                     styles.loc[idx, "Ticker"] = (
                         f"background-color: {medaillen[dip_rank]}; font-weight: bold;"
                     )
+
+                # GD200-Zelle: Kurs vs. GD200 (grün = klar drüber, grau = knapp
+                # drüber (<=1%), rot = drunter)
+                kurs_val = row_raw["Kurs"]
+                gd200_val = row_raw["GD200"]
+                gd200_10d_val = row_raw["GD200_10d"]
+
+                gd200_diff_pct = (
+                    ((kurs_val - gd200_val) / gd200_val) * 100 if gd200_val else 0.0
+                )
+                if gd200_diff_pct <= 0:
+                    styles.loc[idx, "GD200"] = "background-color: #f8d7da; color: #721c24;"
+                elif gd200_diff_pct <= 1:
+                    styles.loc[idx, "GD200"] = "background-color: #e2e3e5; color: #383d41;"
+                else:
+                    styles.loc[idx, "GD200"] = "background-color: #d4edda; color: #155724;"
+
+                # GD200 v10T-Zelle: GD200 heute vs. GD200 vor 10 Tagen (Trendrichtung)
+                gd200_10d_diff_pct = (
+                    ((gd200_val - gd200_10d_val) / gd200_10d_val) * 100
+                    if gd200_10d_val
+                    else 0.0
+                )
+                if gd200_10d_diff_pct <= 0:
+                    styles.loc[idx, "GD200 v10T"] = "background-color: #f8d7da; color: #721c24;"
+                elif gd200_10d_diff_pct <= 1:
+                    styles.loc[idx, "GD200 v10T"] = "background-color: #e2e3e5; color: #383d41;"
+                else:
+                    styles.loc[idx, "GD200 v10T"] = "background-color: #d4edda; color: #155724;"
 
                 styles.loc[idx, "Dip Score"] = (
                     "font-weight: bold; text-align: center;"
