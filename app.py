@@ -64,7 +64,7 @@ MANUAL_TICKERS = {}
 # ==========================================
 # SCANNER-KONFIGURATION (hier einfach anpassbar)
 # ==========================================
-KAUFSIGNAL_SCHWELLE = 75.0       # Dip Score, ab dem ein Kaufsignal markiert wird
+KAUFSIGNAL_SCHWELLE = 66.0       # Dip Score, ab dem ein Kaufsignal markiert wird
 RSI_WATCHLIST_SCHWELLE = 40.0    # Hauptkriterium: nur ETFs mit RSI darunter erscheinen in der Watchlist
 MARKT_BENCHMARK_TICKER = "URTH"  # Breiter Referenzindex (iShares MSCI World). Alternative: "^STOXX" (Europa)
 REGIME_MALUS_FAKTOR = 0.8        # Dämpfung aller Scores, wenn der Referenzindex unter seinem GD200 liegt
@@ -140,7 +140,7 @@ def markt_regime_ok(benchmark_ticker=None):
     """
     ticker = benchmark_ticker or MARKT_BENCHMARK_TICKER
     try:
-        df = yf.download(ticker, period="1y", progress=False)
+        df = yf.download(ticker, period="1y", progress=False, auto_adjust=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         close = df["Close"].dropna()
@@ -165,7 +165,7 @@ def berechne_indikatoren(isin, ticker=None):
     data, erfolgreicher_ticker = None, None
     for ticker_symbol in kandidaten:
         try:
-            df = yf.download(ticker_symbol, period="2y", progress=False)
+            df = yf.download(ticker_symbol, period="2y", progress=False, auto_adjust=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
@@ -290,13 +290,20 @@ def berechne_indikatoren(isin, ticker=None):
     bounce_atr_ratio = (
         (c_today - tages_tief) / atr14_heute if atr14_heute > 0 else 0.0
     )
-    turnaround_bounce_score = min(15.0, max(0.0, bounce_atr_ratio) * 30.0)
+    turnaround_bounce_score = min(15.0, max(0.0, bounce_atr_ratio) * 40.0)
 
     #    b) RSI-Richtungswechsel (Tagesdelta)
-    turnaround_rsi_score = min(10.0, max(0.0, rsi_heute - rsi_gestern) * 2.0)
+    turnaround_rsi_score = min(10.0, max(0.0, rsi_heute - rsi_gestern) * 3.0)
 
-    #    c) Bestätigungs-Bonus: Schlusskurs über Vortageshoch
-    turnaround_bestaetigung = 10.0 if c_today > vortages_hoch else 0.0
+    #    c) Bestätigungs-Bonus: Schlusskurs über/nahe Vortageshoch (graduell,
+    #       damit ein Tag-1-Reversal nicht automatisch 0 Punkte bekommt)
+    if c_today >= vortages_hoch:
+        turnaround_bestaetigung = 10.0
+    elif atr14_heute > 0:
+        naehe_faktor = max(0.0, 1.0 - (vortages_hoch - c_today) / atr14_heute)
+        turnaround_bestaetigung = round(min(6.0, naehe_faktor * 6.0), 1)
+    else:
+        turnaround_bestaetigung = 0.0
 
     turnaround_score = min(
         35.0,
@@ -340,7 +347,7 @@ st.title("📈 ETF Dip-Scanner & Portfolio-Manager")
 
 with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     st.markdown(f"""
-    ### 🎯 Ein Kaufsignal! = Dip Score ≥ {KAUFSIGNAL_SCHWELLE:.0f}
+    ### 🎯 Ein Kaufsignal = Dip Score ≥ {KAUFSIGNAL_SCHWELLE:.0f}
     Es gibt keinen separaten Ja/Nein-Filter mehr - alle bisherigen Kriterien
     (RSI, Trend, Turnaround, Marktumfeld) fließen in **einen einzigen Score**
     von maximal ca. 100 Punkten ein. Je höher der Score, desto überzeugender
@@ -407,6 +414,48 @@ if st.sidebar.button("🔄 Daten aktualisieren", use_container_width=True):
     if "watchlist_signale" in st.session_state:
         del st.session_state["watchlist_signale"]
     st.rerun()
+
+with st.sidebar.expander("🔍 Debug: Einzelne ISIN prüfen"):
+    debug_isin = st.text_input("ISIN eingeben", key="debug_isin_input")
+    if debug_isin:
+        debug_ticker = None
+        for e in parse_isin_file("isin.txt"):
+            if e["isin"] == debug_isin.strip():
+                debug_ticker = e.get("ticker")
+                break
+        if not debug_ticker:
+            for p in PORTFOLIO:
+                if p["isin"] == debug_isin.strip():
+                    debug_ticker = p.get("ticker")
+                    break
+
+        debug_data, debug_used_ticker = berechne_indikatoren(
+            debug_isin.strip(), debug_ticker
+        )
+        if debug_data:
+            st.write(f"Aufgelöster Ticker: `{debug_used_ticker}`")
+            st.write(
+                f"Kurs: **{debug_data['close']:.2f}** | "
+                f"RSI: **{debug_data['rsi']:.2f}**"
+            )
+            try:
+                raw = yf.download(
+                    debug_used_ticker,
+                    period="15d",
+                    progress=False,
+                    auto_adjust=False,
+                )
+                if isinstance(raw.columns, pd.MultiIndex):
+                    raw.columns = raw.columns.get_level_values(0)
+                st.caption("Rohdaten der letzten Handelstage (Close vs. Adj Close):")
+                st.dataframe(
+                    raw[["Close", "Adj Close"]].tail(10),
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error(f"Rohdaten-Abruf fehlgeschlagen: {e}")
+        else:
+            st.error("Keine Daten für diese ISIN/diesen Ticker gefunden.")
 
 etfs = parse_isin_file("isin.txt")
 
@@ -558,6 +607,7 @@ with tab1:
         st.caption(
             "💡 **Farblegende:** 🥇/🥈/🥉 Top Dip-Scores | 🔥 Kaufsignal "
             "(Score ≥ Schwelle) | 🟪 Lila: Im Portfolio | "
+            "RSI: 🟩 ≤31.9, ⬜ 32-35, 🟥 >35 | "
             "GD200 & GD200 v10T: 🟩 klar drüber/steigend, ⬜ knapp (≤1%), 🟥 drunter/fallend"
         )
 
@@ -572,7 +622,7 @@ with tab1:
                     "📊 Nähe zu GD200-Unterstützung",
                     "📉 Stärkster 1W-Rücksetzer",
                 ],
-                index=0,
+                index=1,
             )
 
         df_watch = pd.DataFrame(watch)
@@ -700,6 +750,15 @@ with tab1:
                 kurs_val = row_raw["Kurs"]
                 gd200_val = row_raw["GD200"]
                 gd200_10d_val = row_raw["GD200_10d"]
+                rsi_val = row_raw["RSI"]
+
+                # RSI-Zelle: <=31.9 grün, 32-35 grau, Rest (>35) rot
+                if rsi_val <= 31.9:
+                    styles.loc[idx, "RSI"] = "background-color: #d4edda; color: #155724;"
+                elif rsi_val <= 35:
+                    styles.loc[idx, "RSI"] = "background-color: #e2e3e5; color: #383d41;"
+                else:
+                    styles.loc[idx, "RSI"] = "background-color: #f8d7da; color: #721c24;"
 
                 gd200_diff_pct = (
                     ((kurs_val - gd200_val) / gd200_val) * 100 if gd200_val else 0.0
