@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, time as dt_time
+from zoneinfo import ZoneInfo
 import logging
 import warnings
 import re
@@ -68,6 +69,8 @@ KAUFSIGNAL_SCHWELLE = 66.0       # Dip Score, ab dem ein Kaufsignal markiert wir
 RSI_WATCHLIST_SCHWELLE = 40.0    # Hauptkriterium: nur ETFs mit RSI darunter erscheinen in der Watchlist
 MARKT_BENCHMARK_TICKER = "URTH"  # Breiter Referenzindex (iShares MSCI World). Alternative: "^STOXX" (Europa)
 REGIME_MALUS_FAKTOR = 0.8        # Dämpfung aller Scores, wenn der Referenzindex unter seinem GD200 liegt
+DATENSTAND_CUTOFF_STUNDE = 19    # Vor dieser Uhrzeit (Europe/Berlin) gilt der heutige Schlusskurs
+                                  # noch als nicht final bestätigt -> letzter Vortag wird verwendet
 
 
 def parse_isin_file(filename="isin.txt"):
@@ -201,6 +204,26 @@ def berechne_indikatoren(isin, ticker=None):
     close = data["Close"].dropna()
     low = data["Low"].dropna() if "Low" in data else close
     high = data["High"].dropna() if "High" in data else close
+
+    # --- KONSERVATIVER MODUS: heutigen Datenpunkt ggf. ausblenden ---
+    # Solange der heutige Schlusskurs noch nicht sicher final bestätigt ist
+    # (Börse noch offen ODER Schluss liegt noch keine DATENSTAND_CUTOFF_STUNDE
+    # zurück), wird stattdessen der letzte bestätigte Vortag verwendet. Das
+    # verhindert, dass Turnaround/RSI auf Basis einer noch laufenden oder
+    # frisch-vorläufigen Tageskerze berechnet werden.
+    try:
+        jetzt_berlin = datetime.now(ZoneInfo("Europe/Berlin"))
+        letztes_datum = close.index[-1].date()
+        if (
+            letztes_datum == jetzt_berlin.date()
+            and jetzt_berlin.time() < dt_time(DATENSTAND_CUTOFF_STUNDE, 0)
+            and len(close) > 1
+        ):
+            close = close.iloc[:-1]
+            low = low.iloc[:-1]
+            high = high.iloc[:-1]
+    except Exception:
+        pass
 
     # 52-Wochen-Hoch (ca. 252 Handelstage)
     high_52w = float(high.tail(252).max()) if len(high) >= 252 else float(high.max())
