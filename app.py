@@ -340,7 +340,7 @@ st.title("📈 ETF Dip-Scanner & Portfolio-Manager")
 
 with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     st.markdown(f"""
-    ### 🎯 Ein Kaufsignal = Dip Score ≥ {KAUFSIGNAL_SCHWELLE:.0f}
+    ### 🎯 Ein Kaufsignal! = Dip Score ≥ {KAUFSIGNAL_SCHWELLE:.0f}
     Es gibt keinen separaten Ja/Nein-Filter mehr - alle bisherigen Kriterien
     (RSI, Trend, Turnaround, Marktumfeld) fließen in **einen einzigen Score**
     von maximal ca. 100 Punkten ein. Je höher der Score, desto überzeugender
