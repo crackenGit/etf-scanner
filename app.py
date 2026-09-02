@@ -205,6 +205,22 @@ def berechne_indikatoren(isin, ticker=None):
     low = data["Low"].dropna() if "Low" in data else close
     high = data["High"].dropna() if "High" in data else close
 
+    # --- LIVE-WERTE: immer der neueste verfügbare Punkt, bevor der
+    #     konservative Modus ihn ggf. verwirft. Rein zur Beobachtung/Tendenz,
+    #     fließt NICHT in den Dip Score ein. ---
+    live_close, live_rsi = None, None
+    try:
+        live_close = float(close.iloc[-1])
+        live_delta = close.diff()
+        live_gain = live_delta.clip(lower=0)
+        live_loss = -1 * live_delta.clip(upper=0)
+        live_avg_gain = live_gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+        live_avg_loss = live_loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+        live_rsi_series = 100 - (100 / (1 + (live_avg_gain / live_avg_loss)))
+        live_rsi = float(live_rsi_series.iloc[-1])
+    except Exception:
+        pass
+
     # --- KONSERVATIVER MODUS: heutigen Datenpunkt ggf. ausblenden ---
     # Solange der heutige Schlusskurs noch nicht sicher final bestätigt ist
     # (Börse noch offen ODER Schluss liegt noch keine DATENSTAND_CUTOFF_STUNDE
@@ -360,6 +376,8 @@ def berechne_indikatoren(isin, ticker=None):
         "close": c_today,
         "rsi": rsi_today,
         "rsi35_preis": float(rsi35_preis),
+        "live_close": live_close if live_close is not None else c_today,
+        "live_rsi": live_rsi if live_rsi is not None else rsi_today,
         "gd200": gd200_heute,
         "gd200_vor_10d": gd200_vor_10d,
         "ema50": ema50_heute,
@@ -559,6 +577,8 @@ if "watchlist_signale" not in st.session_state:
             dip_score = data["dip_score"]
             turnaround_score = data["turnaround_score"]
             regime_ok = data["regime_ok"]
+            live_kurs = data["live_close"]
+            live_rsi = data["live_rsi"]
 
             gd200_abstand = ((gd200 - c) / c) * 100
             gd200_10d_abstand = ((gd200_10d - c) / c) * 100
@@ -578,6 +598,8 @@ if "watchlist_signale" not in st.session_state:
                 "RSI": round(rsi, 1),
                 "RSI 35 Preis": rsi35,
                 "RSI35_Abstand": rsi35_abstand,
+                "Live_Kurs": live_kurs,
+                "Live_RSI": round(live_rsi, 1),
                 "GD200": gd200,
                 "GD200_Abstand": gd200_abstand,
                 "GD200_10d": gd200_10d,
@@ -653,6 +675,7 @@ with tab1:
             "💡 **Farblegende:** 🥇/🥈/🥉 Top Dip-Scores | 🔥 Kaufsignal "
             "(Score ≥ Schwelle) | 🟪 Lila: Im Portfolio | "
             "RSI: 🟩 ≤31.9, ⬜ 32-35, 🟥 >35 | "
+            "Live: 🟩 RSI-Tendenz ↑ (Erholung), ⬜ unverändert, 🟥 RSI-Tendenz ↓ (noch fallend) | "
             "GD200 & GD200 v10T: 🟩 klar drüber/steigend, ⬜ knapp (≤1%), 🟥 drunter/fallend"
         )
 
@@ -720,10 +743,16 @@ with tab1:
         display_df["Kurs"] = df_watch["Kurs"].map(lambda x: f"{x:.2f} €")
         display_df["RSI"] = df_watch["RSI"].map(lambda x: f"{x:.1f}")
 
-        display_df["RSI 35 Preis"] = df_watch.apply(
+        display_df["Live"] = df_watch.apply(
             lambda r: (
-                f"{r['RSI 35 Preis']:.2f} €"
-                f" ({((r['RSI 35 Preis'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
+                f"{r['Live_Kurs']:.2f} € ("
+                f"{r['Live_RSI']:.1f} "
+                + (
+                    "↑"
+                    if r["Live_RSI"] > r["RSI"]
+                    else ("↓" if r["Live_RSI"] < r["RSI"] else "→")
+                )
+                + ")"
             ),
             axis=1,
         )
@@ -804,6 +833,16 @@ with tab1:
                     styles.loc[idx, "RSI"] = "background-color: #e2e3e5; color: #383d41;"
                 else:
                     styles.loc[idx, "RSI"] = "background-color: #f8d7da; color: #721c24;"
+
+                # Live-Zelle: Tendenz Live-RSI vs. bestätigter RSI
+                live_rsi_val = row_raw.get("Live_RSI")
+                if live_rsi_val is not None:
+                    if live_rsi_val > rsi_val:
+                        styles.loc[idx, "Live"] = "background-color: #d4edda; color: #155724;"
+                    elif live_rsi_val < rsi_val:
+                        styles.loc[idx, "Live"] = "background-color: #f8d7da; color: #721c24;"
+                    else:
+                        styles.loc[idx, "Live"] = "background-color: #e2e3e5; color: #383d41;"
 
                 gd200_diff_pct = (
                     ((kurs_val - gd200_val) / gd200_val) * 100 if gd200_val else 0.0
