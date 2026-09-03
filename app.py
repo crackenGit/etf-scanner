@@ -15,6 +15,8 @@ from dip_score import (
     signal_stufe,
     KAUFSIGNAL_SCHWELLE,
     SOFT_KAUFSIGNAL_SCHWELLE,
+    ZIEL_RENDITE_SOFT_PCT,
+    ZIEL_RENDITE_VOLL_PCT,
     RSI_WATCHLIST_SCHWELLE,
     REGIME_MALUS_FAKTOR,
     MARKT_BENCHMARK_TICKER,
@@ -374,22 +376,32 @@ with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     -40%) ab 10% Abstand oder mehr.
     """)
 
-with st.expander("📊 Wie werden Kauf- & Verkaufstranchen gesetzt? (Regelwerk)", expanded=False):
+with st.expander("📊 Wie wird das Verkaufsziel gesetzt? (Regelwerk)", expanded=False):
     col_t1, col_t2 = st.columns(2)
 
     with col_t1:
-        st.markdown("""
-        ### 🟢 Tranche 1 (50 % Verkauf)
-        * **Ziel:** Erreichen der **EMA50-Linie** (Mean Reversion).
-        * **Sinn:** Schnelle Teilgewinnmitnahme nach dem Dip zur Risiko-Reduzierung.
+        st.markdown(f"""
+        ### 🟡 Softes Signal → +{ZIEL_RENDITE_SOFT_PCT:.0f}%
+        * **Ziel:** Kompletter Verkauf bei Kaufkurs + {ZIEL_RENDITE_SOFT_PCT:.0f}%.
+        * **Sinn:** Backtest-optimiert - schlägt die alte EMA50-Regel in
+          Rendite pro Tag deutlich (0,32 vs. 0,13 %/Tag).
         """)
 
     with col_t2:
-        st.markdown("""
-        ### 🎯 Tranche 2 (50 % Verkauf)
-        * **Ziel:** **52-Wochen-Hoch (-1 % Puffer)**.
-        * **Absicherung:** Dynamic Stop Loss bei **Kaufkurs + 50 % des T1-Gewinns** (garantiertes Plus + maximaler Atempuffer).
+        st.markdown(f"""
+        ### 🔥 Volles Signal → +{ZIEL_RENDITE_VOLL_PCT:.0f}%
+        * **Ziel:** Kompletter Verkauf bei Kaufkurs + {ZIEL_RENDITE_VOLL_PCT:.0f}%.
+        * **Sinn:** Schlägt die alte EMA50/52W-Hoch-Regel auch absolut
+          (+3,58% vs. +3,27%) bei weniger als halber Haltedauer.
         """)
+
+    st.caption(
+        "Ersetzt die frühere zweistufige EMA50/52-Wochen-Hoch-Tranchenlogik "
+        "(Kompletteverkauf statt Teilverkauf) - siehe Portfolio-Tab für den "
+        "aktuellen Abstand zum Ziel je Position. Damit ein Kursziel berechnet "
+        "werden kann, muss die Position `'signal_stufe': 'soft'` oder "
+        "`'voll'` (oder ersatzweise `'dip_score_bei_kauf'`) in `portfolio.py` haben."
+    )
 
 if "letztes_update" in st.session_state:
     st.caption(
@@ -848,191 +860,162 @@ with tab1:
     else:
         st.write("Keine ETFs in der Watchlist.")
 
-# --- TAB 2: HIGH-END PORTFOLIO MANAGER ---
+# --- TAB 2: PORTFOLIO-MANAGER ---
 with tab2:
-    st.subheader("📊 Aktive Positionen & Ausstiegs-Manager")
+    st.subheader("📊 Aktive Positionen")
 
     if not aktive_positionen:
-        st.info("Aktuell keine aktiven offene Positionen im Portfolio.")
+        st.info("Aktuell keine aktiven offenen Positionen im Portfolio.")
+    else:
+        portfolio_zeilen = []
+        fehler_liste = []
 
-    for pos in aktive_positionen:
-        try:
-            # Zentrale Kursdaten beziehen
-            data, ticker_used = berechne_indikatoren(pos["isin"], pos.get("ticker"))
+        for pos in aktive_positionen:
+            try:
+                data, ticker_used = berechne_indikatoren(pos["isin"], pos.get("ticker"))
+                if not data:
+                    fehler_liste.append(f"{pos.get('name', pos.get('isin', '?'))} (keine Kursdaten)")
+                    continue
 
-            if not data:
-                st.error(f"Keine Kursdaten für {pos['name']} ({pos['isin']}) verfügbar.")
-                continue
+                current_price = data["close"]
+                buy_price = float(pos["buy_price"])
+                ist_alt_position = pos.get("partially_sold", False)
 
-            current_price = data["close"]
-            rsi_today = data["rsi"]
-            ema50_today = data["ema50"]
-            high_52w = data["high_52w"]  # Direkt aus data nutzen
+                # Signalstufe: bevorzugt direkt aus portfolio.py ('signal_stufe'),
+                # sonst aus dem bei Kauf gespeicherten Score ableiten, sonst unbekannt.
+                stufe = pos.get("signal_stufe")
+                if stufe not in ("soft", "voll"):
+                    gespeicherter_score = pos.get("dip_score_bei_kauf")
+                    stufe = (
+                        signal_stufe(float(gespeicherter_score))
+                        if gespeicherter_score is not None
+                        else None
+                    )
+                    if stufe == "kein":
+                        stufe = None
 
-            # 52-Wochen-Hoch & Tranche 2 Ziel (-1%)
-            ath_target_price = high_52w * 0.99
-            dist_ath_pct = (
-                (current_price - ath_target_price) / current_price
-            ) * 100
-
-            is_partially_sold = pos.get("partially_sold", False)
-            buy_price = float(pos["buy_price"])
-
-            # Stop-Loss Limit Festlegung (DYNAMISCH: Kaufkurs + 50% des T1-Gewinns)
-            if is_partially_sold and pos.get("t1_sell_price"):
-                # Phase 2: T1 wurde realisiert
-                t1_price = float(pos["t1_sell_price"])
-                t1_profit = t1_price - buy_price
-                stop_loss_limit = buy_price + (t1_profit / 2.0)
-                sl_label = "Tranche 2: Stop Loss Limit"
-            else:
-                # Phase 1: T1 noch nicht verkauft -> Vorschau auf den SL bei T1-Verkauf am EMA50
-                if ema50_today > buy_price:
-                    stop_loss_limit = buy_price + ((ema50_today - buy_price) / 2.0)
+                if ist_alt_position:
+                    ziel_pct, ziel_kurs = None, None
+                elif stufe == "voll":
+                    ziel_pct = ZIEL_RENDITE_VOLL_PCT
+                    ziel_kurs = buy_price * (1 + ziel_pct / 100)
+                elif stufe == "soft":
+                    ziel_pct = ZIEL_RENDITE_SOFT_PCT
+                    ziel_kurs = buy_price * (1 + ziel_pct / 100)
                 else:
-                    stop_loss_limit = buy_price  # Fallback auf Kaufkurs (Einstand)
-                sl_label = "Tranche 2: Stop Loss (Vorschau)"
+                    ziel_pct, ziel_kurs = None, None
 
-            dist_stop_loss_pct = (
-                (current_price - stop_loss_limit) / current_price
-            ) * 100
-
-            investment = buy_price * pos["shares"]
-            current_value = current_price * pos["shares"]
-            profit_eur = current_value - investment
-            profit_pct = ((current_price - buy_price) / buy_price) * 100
-
-            days_held = 0
-            if pos.get("buy_date"):
-                buy_date = pd.to_datetime(pos["buy_date"])
-                today_date = pd.to_datetime(
-                    datetime.now().strftime("%Y-%m-%d")
-                )
-                days_held = (today_date - buy_date).days
-
-            # Signal-Logik
-            signal_type = "info"
-            if not is_partially_sold:
-                if current_price >= ema50_today:
-                    signal_type = "success"
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    signal = (
-                        "🎯 **TRANCHE 1 ERREICHT: Jetzt 50% VERKAUFEN!**\n\n"
-                        "👉 In `portfolio.py` anpassen: `'partially_sold': True` &"
-                        f" `'t1_sell_date': '{today_str}'` &"
-                        f" `'t1_sell_price': {current_price:.2f}`"
-                    )
+                if ziel_kurs is not None:
+                    abstand_euro = ziel_kurs - current_price
+                    abstand_pct = (abstand_euro / current_price) * 100
+                    ziel_erreicht = current_price >= ziel_kurs
                 else:
-                    dist_ema50_pct = (
-                        (current_price - ema50_today) / current_price
-                    ) * 100
-                    signal = (
-                        f"🟢 **100% IM DEPOT:** Warten auf Tranche 1 am EMA50 bei **{ema50_today:.2f} €** "
-                        f"(Abstand: {dist_ema50_pct:+.2f}%)"
-                    )
-            else:
-                if current_price >= ath_target_price:
-                    signal_type = "success"
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    signal = (
-                        f"🚀 **TRANCHE 2 ZIEL (52W-HOCH -1%) ERREICHT!**\n\n"
-                        f"👉 52-Wochen-Hoch liegt bei {high_52w:.2f} € → Restliche 50% Verkaufen bei **{ath_target_price:.2f} €**!\n"
-                        f"👉 Nach Verkauf in `portfolio.py` eintragen: `'sold': True`, `'t2_sell_date': '{today_str}'`, `'t2_sell_price': {current_price:.2f}`"
-                    )
-                elif current_price <= stop_loss_limit:
-                    signal_type = "error"
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    signal = (
-                        f"🚨 **DYNAMISCHER STOP LOSS UNTERSCHRITTEN!**\n\n"
-                        f"Kurs ({current_price:.2f} €) ist unter die 50%-Gewinn-Absicherung ({stop_loss_limit:.2f} €) gefallen.\n"
-                        f"Restliche 50% glattstellen! In `portfolio.py` eintragen: `'sold': True`, `'t2_sell_date': '{today_str}'`, `'t2_sell_price': {current_price:.2f}`"
-                    )
-                else:
-                    signal = (
-                        f"🛡️ **2. HÄLFTE LÄUFT:** Warten auf 52W-Hoch-Verkauf bei **{ath_target_price:.2f} €** "
-                        f"oder Absicherung beim dynamischen Stop-Loss (50% T1-Gewinn) bei **{stop_loss_limit:.2f} €**."
-                    )
+                    abstand_euro, abstand_pct = None, None
+                    ziel_erreicht = False
 
-            # --- ANZEIGE IN CONTAINERN ---
-            with st.container(border=True):
-                st.markdown(
-                    f"### {pos['name']} (`{ticker_used}`) — ISIN:"
-                    f" `{pos['isin']}`"
+                performance_pct = ((current_price - buy_price) / buy_price) * 100
+
+                days_held = 0
+                if pos.get("buy_date"):
+                    buy_date = pd.to_datetime(pos["buy_date"])
+                    today_date = pd.to_datetime(datetime.now().strftime("%Y-%m-%d"))
+                    days_held = (today_date - buy_date).days
+
+                portfolio_zeilen.append({
+                    "Name": pos.get("name", ticker_used),
+                    "ISIN": pos["isin"],
+                    "WKN": pos.get("wkn", "-"),
+                    "Ticker": ticker_used,
+                    "Kurs": current_price,
+                    "Kaufkurs": buy_price,
+                    "Signal": "alt" if ist_alt_position else (stufe or "unbekannt"),
+                    "Zielkurs": ziel_kurs,
+                    "Abstand_Euro": abstand_euro,
+                    "Abstand_Pct": abstand_pct,
+                    "Performance_Pct": performance_pct,
+                    "Tage": days_held,
+                    "Ziel_Erreicht": ziel_erreicht,
+                })
+            except Exception as e:
+                fehler_liste.append(f"{pos.get('name', pos.get('isin', '?'))} ({e})")
+
+        if fehler_liste:
+            with st.expander(f"⚠️ {len(fehler_liste)} Position(en) mit Fehler"):
+                for f in fehler_liste:
+                    st.write(f"- {f}")
+
+        if portfolio_zeilen:
+            df_portfolio = pd.DataFrame(portfolio_zeilen)
+
+            anzahl_ziel_erreicht = int(df_portfolio["Ziel_Erreicht"].sum())
+            if anzahl_ziel_erreicht > 0:
+                st.success(
+                    f"🎯 **{anzahl_ziel_erreicht} Position(en) haben ihr Kursziel erreicht!**"
                 )
 
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric(
-                    "Depot-Status",
-                    (
-                        "✅ 50% Verkauft"
-                        if is_partially_sold
-                        else "⏳ 100% Im Depot"
-                    ),
-                    f"{days_held} Tage gehalten",
-                )
-                c2.metric(
-                    "Kaufkurs / Aktuell",
-                    f"{buy_price:.2f} €",
-                    f"Aktuell: {current_price:.2f} €",
-                )
-                c3.metric(
-                    "Performance Gesamt",
-                    f"{profit_pct:+.2f}%",
-                    f"{profit_eur:+.2f} €",
-                )
-                c4.metric(
-                    "Aktueller RSI",
-                    f"{rsi_today:.1f}",
-                    f"EMA50: {ema50_today:.2f} €",
+            anzahl_unbekannt = int((df_portfolio["Signal"] == "unbekannt").sum())
+            if anzahl_unbekannt > 0:
+                st.caption(
+                    f"❓ {anzahl_unbekannt} Position(en) ohne bekannte Signalstufe - "
+                    "'signal_stufe' (oder 'dip_score_bei_kauf') in portfolio.py ergänzen, "
+                    "um dafür ein Kursziel zu berechnen."
                 )
 
-                st.markdown("---")
+            display_df = pd.DataFrame()
+            display_df["Name"] = df_portfolio["Name"]
+            display_df["ISIN"] = df_portfolio["ISIN"]
+            display_df["WKN"] = df_portfolio["WKN"]
+            display_df["Kurs"] = df_portfolio["Kurs"].map(lambda x: f"{x:.2f} €")
+            display_df["Kaufkurs"] = df_portfolio["Kaufkurs"].map(lambda x: f"{x:.2f} €")
+            display_df["Signal"] = df_portfolio["Signal"].map(
+                lambda s: {
+                    "voll": "🔥 Voll",
+                    "soft": "🟡 Soft",
+                    "alt": "⚪ Alt-System",
+                    "unbekannt": "❓ unbekannt",
+                }.get(s, "❓ unbekannt")
+            )
+            display_df["Zielkurs"] = df_portfolio["Zielkurs"].map(
+                lambda x: f"{x:.2f} €" if pd.notna(x) else "-"
+            )
+            display_df["Abstand z. Ziel"] = df_portfolio.apply(
+                lambda r: (
+                    f"{r['Abstand_Euro']:+.2f} € ({r['Abstand_Pct']:+.1f}%)"
+                    if pd.notna(r["Abstand_Euro"])
+                    else "-"
+                ),
+                axis=1,
+            )
+            display_df["Performance"] = df_portfolio["Performance_Pct"].map(
+                lambda x: f"{x:+.2f}%"
+            )
+            display_df["Tage"] = df_portfolio["Tage"]
 
-                t1, t2, t3 = st.columns(3)
+            def style_portfolio(df):
+                styles = pd.DataFrame("", index=df.index, columns=df.columns)
+                for idx in df.index:
+                    row_raw = df_portfolio.loc[idx]
+                    if row_raw["Ziel_Erreicht"]:
+                        color = (
+                            "background-color: #d4edda; color: #155724;"
+                            " font-weight: bold;"
+                        )
+                        for col in df.columns:
+                            styles.loc[idx, col] = color
+                return styles
 
-                if is_partially_sold and pos.get("t1_sell_price"):
-                    t1_price = float(pos["t1_sell_price"])
-                    t1_profit_pct = ((t1_price - buy_price) / buy_price) * 100
-                    t1_profit_eur = (t1_price - buy_price) * (
-                        pos["shares"] / 2.0
-                    )
+            styled_portfolio = display_df.style.apply(style_portfolio, axis=None)
+            st.dataframe(styled_portfolio, use_container_width=True, hide_index=True)
 
-                    t1.metric(
-                        "Tranche 1 (Realisiert)",
-                        f"{t1_price:.2f} €",
-                        f"Gewinn: {t1_profit_pct:+.2f}% ({t1_profit_eur:+.2f} €)",
-                    )
-                else:
-                    t1.metric(
-                        "Tranche 1 Ziel (EMA50)",
-                        f"{ema50_today:.2f} €",
-                        f"{((ema50_today - current_price) / current_price) * 100:+.2f}% zum Kurs",
-                    )
-
-                t2.metric(
-                    "Tranche 2: 52-Wochen-Hoch (Ziel: -1%)",
-                    f"{ath_target_price:.2f} €",
-                    f"52W-Hoch: {high_52w:.2f} € ({dist_ath_pct:+.2f}%)",
-                )
-
-                t3.metric(
-                    sl_label,
-                    f"{stop_loss_limit:.2f} €",
-                    f"Puffer: {dist_stop_loss_pct:+.2f}%",
-                    help=(
-                        "Dynamischer Stop Loss: Kaufkurs + 50% des T1-Gewinns (vor Teilverkauf als Vorschau berechnet)."
-                    ),
-                )
-
-                if signal_type == "success":
-                    st.success(signal)
-                elif signal_type == "error":
-                    st.error(signal)
-                else:
-                    st.info(signal)
-
-        except Exception as e:
-            st.error(f"Fehler bei Position {pos.get('isin')}: {e}")
+            st.caption(
+                f"💡 Exit-Ziele: 🔥 Volles Signal → +{ZIEL_RENDITE_VOLL_PCT:.0f}% | "
+                f"🟡 Softes Signal → +{ZIEL_RENDITE_SOFT_PCT:.0f}% "
+                "(Backtest-optimiert, siehe Kaufsignal-Info oben). "
+                "⚪ Alt-System = vor der Umstellung nach der alten Tranchen-Logik gekauft, "
+                "kein neues Kursziel berechnet."
+            )
+        else:
+            st.info("Keine auswertbaren Positionen.")
 
 # --- TAB 3: HISTORIE & GESCHLOSSENE / TEILVERKAUFTE TRADES ---
 with tab3:
