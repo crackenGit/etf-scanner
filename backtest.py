@@ -48,6 +48,9 @@ HAUPT_VORSCHAU = 21                    # entspricht eurem ~1-Monats-Ziel
 GEWINN_ZIEL_PCT = 10.0                 # euer 10%+-Ziel
 MAX_TAGE_EXIT_SIMULATION = 40          # Obergrenze fuer Tag-fuer-Tag-Kurve & T1/T2-Sim
 SCHWELLEN_SWEEP_BEREICH = range(30, 95, 5)  # Kandidaten-Schwellen fuer Frage 1
+CLUSTER_MAX_LUECKE_TAGE = 7            # Episoden, die hoechstens so viele Kalendertage
+                                        # auseinanderliegen (ueber ALLE Ticker hinweg),
+                                        # gelten als dasselbe "Marktereignis"
 API_PAUSE_SEKUNDEN = 0.3               # kleine Pause zwischen Downloads
 
 # Etablierte, sehr liquide US-Sektor-ETFs mit 20+ Jahren Historie -
@@ -337,10 +340,11 @@ def analysiere_etf(isin, ticker, sektor, regime_serie):
 
 
 def episoden_zaehlen(df, score_spalte="dip_score", schwelle=KAUFSIGNAL_SCHWELLE):
-    """Fasst aufeinanderfolgende Tage mit score>=schwelle pro ETF zu EINER
+    """Fasst aufeinanderfolgende Tage mit score>=schwelle PRO ETF zu EINER
     Episode zusammen (nur der erste Tag zaehlt), damit z.B. 5 Tage am
     Stueck ueber der Schwelle nicht als 5 unabhaengige Ereignisse in die
-    Statistik eingehen."""
+    Statistik eingehen. Deckt NICHT die Haeufung UEBER Ticker hinweg ab
+    (z.B. 33 ETFs am selben Tag) - dafuer siehe cluster_zuweisen()."""
     df = df.sort_values(["isin", "datum"]).copy()
     df["ueber_schwelle"] = df[score_spalte] >= schwelle
     vorheriger_tag = df.groupby("isin")["ueber_schwelle"].shift(1, fill_value=False)
@@ -348,19 +352,71 @@ def episoden_zaehlen(df, score_spalte="dip_score", schwelle=KAUFSIGNAL_SCHWELLE)
     return df[df["episode_start"]].copy()
 
 
+def cluster_zuweisen(episoden_df, max_luecke_tage=CLUSTER_MAX_LUECKE_TAGE):
+    """Gruppiert Episoden UEBER ALLE TICKER HINWEG zu 'Marktereignissen':
+    Episoden, deren Datum hoechstens `max_luecke_tage` Kalendertage von der
+    zeitlich naechsten anderen Episode entfernt liegt, gehoeren zum selben
+    Cluster - unabhaengig davon, welcher Ticker betroffen ist. Das faengt
+    genau das Muster ab, das wir in den echten Daten gefunden haben (z.B.
+    33 ETFs am 06.08.2024 gleichzeitig ueber der Schwelle) und verhindert,
+    dass ein einzelnes Marktereignis als viele unabhaengige Beobachtungen
+    gezaehlt wird."""
+    df = episoden_df.copy()
+    df["datum"] = pd.to_datetime(df["datum"])
+    eindeutige_daten = sorted(df["datum"].unique())
+
+    cluster_id = 0
+    datum_zu_cluster = {}
+    voriges_datum = None
+    for datum in eindeutige_daten:
+        if voriges_datum is not None and (datum - voriges_datum).days > max_luecke_tage:
+            cluster_id += 1
+        datum_zu_cluster[datum] = cluster_id
+        voriges_datum = datum
+
+    df["cluster_id"] = df["datum"].map(datum_zu_cluster)
+    return df
+
+
+def geclusterte_kennzahlen(episoden_df, rendite_spalte, max_luecke_tage=CLUSTER_MAX_LUECKE_TAGE):
+    """Berechnet eine Kennzahl, bei der jedes Marktereignis (Cluster aus
+    cluster_zuweisen) GENAU EINMAL zaehlt: zuerst der Mittelwert INNERHALB
+    jedes Clusters, danach der Mittelwert UEBER die Cluster. Ein Tag mit 33
+    gleichzeitigen Signalen zaehlt damit wie EIN Ereignis, nicht wie 33 -
+    das ist der konservativere, unabhaengigere Vergleichswert zur rohen
+    Episoden-Statistik."""
+    df = cluster_zuweisen(episoden_df, max_luecke_tage)
+    valide = df.dropna(subset=[rendite_spalte])
+    if valide.empty:
+        return {
+            "anzahl_cluster": 0,
+            "anzahl_episoden_in_clustern": 0,
+            "geclusterter_mittelwert_pct": None,
+        }
+    cluster_mittelwerte = valide.groupby("cluster_id")[rendite_spalte].mean()
+    return {
+        "anzahl_cluster": int(valide["cluster_id"].nunique()),
+        "anzahl_episoden_in_clustern": int(len(valide)),
+        "geclusterter_mittelwert_pct": round(float(cluster_mittelwerte.mean()), 2),
+    }
+
+
 def schwellen_sweep(df, schwellen=SCHWELLEN_SWEEP_BEREICH):
     """FRAGE 1: Welche Dip-Score-Schwelle ist optimal? Wertet fuer jede
     Kandidaten-Schwelle Trefferquote, Ø-Gewinn/-Verlust und den
-    Erwartungswert (= Ø-Return ueber alle Episoden dieser Schwelle) aus."""
+    Erwartungswert aus - sowohl roh (pro Episode) als auch geclustert
+    (pro unabhaengigem Marktereignis), damit sichtbar wird, wie stark
+    zeitliche Haeufung die rohe Zahl verzerrt."""
     zeilen = []
     for schwelle in schwellen:
         episoden = episoden_zaehlen(df, schwelle=schwelle)
         valide = episoden.dropna(subset=[f"return_{HAUPT_VORSCHAU}t"])
         if len(valide) == 0:
             zeilen.append({
-                "schwelle": schwelle, "anzahl_episoden": 0,
+                "schwelle": schwelle, "anzahl_episoden": 0, "anzahl_cluster": 0,
                 "trefferquote_pct": None, "avg_gewinn_pct": None,
                 "avg_verlust_pct": None, "erwartungswert_pct": None,
+                "geclusterter_erwartungswert_pct": None,
                 "ziel_erreicht_pct": None,
             })
             continue
@@ -373,14 +429,17 @@ def schwellen_sweep(df, schwellen=SCHWELLEN_SWEEP_BEREICH):
         avg_verlust = verlierer.mean() if len(verlierer) > 0 else 0.0
         erwartungswert = rendite_spalte.mean()
         ziel_rate = valide["ziel_erreicht_21t"].mean() * 100
+        cluster_stats = geclusterte_kennzahlen(valide, f"return_{HAUPT_VORSCHAU}t")
 
         zeilen.append({
             "schwelle": schwelle,
             "anzahl_episoden": len(valide),
+            "anzahl_cluster": cluster_stats["anzahl_cluster"],
             "trefferquote_pct": round(trefferquote, 1),
             "avg_gewinn_pct": round(avg_gewinn, 2),
             "avg_verlust_pct": round(avg_verlust, 2),
             "erwartungswert_pct": round(erwartungswert, 2),
+            "geclusterter_erwartungswert_pct": cluster_stats["geclusterter_mittelwert_pct"],
             "ziel_erreicht_pct": round(ziel_rate, 1),
         })
     return pd.DataFrame(zeilen)
@@ -447,12 +506,12 @@ def zusammenfassung(df, label=""):
     print(f"{'-' * 60}")
     sweep = schwellen_sweep(df)
     print(sweep.to_string(index=False))
-    print("\n  Hinweis: 'erwartungswert_pct' ist der Ø-Return ueber ALLE Episoden")
-    print("  dieser Schwelle (Gewinne UND Verluste eingerechnet) - aussagekraeftiger")
-    print("  als die Trefferquote allein. Sucht das Plateau: ab welcher Schwelle")
-    print("  verbessert sich der Erwartungswert kaum noch, waehrend die Anzahl")
-    print("  Episoden (= Handelsfrequenz) weiter sinkt?")
-    print("  Bei wenigen Episoden pro Schwelle (<~20) sind das Tendenzen, kein Beweis.")
+    print("\n  Hinweis: 'erwartungswert_pct' ist der Ø-Return ueber ALLE Episoden dieser")
+    print("  Schwelle. 'geclusterter_erwartungswert_pct' fasst zeitlich nah beieinander")
+    print("  liegende Episoden UEBER ALLE TICKER HINWEG zu einem Marktereignis zusammen")
+    print("  (z.B. zaehlt ein Tag mit 33 gleichzeitigen Signalen als 1 statt 33) - das")
+    print("  ist die robustere, aber konservativere Zahl. 'anzahl_cluster' ist die")
+    print("  eigentliche unabhaengige Stichprobengroesse, nicht 'anzahl_episoden'.")
 
     return sweep
 
@@ -499,7 +558,11 @@ def main():
         print("Keine Episoden bei der aktuellen Schwelle gefunden - Exit-Analyse übersprungen.")
     else:
         exit_df.to_csv("backtest_exit_analyse.csv", index=False)
-        print(f"{len(exit_df)} Episoden analysiert, gespeichert in backtest_exit_analyse.csv\n")
+        print(f"{len(exit_df)} Episoden analysiert, gespeichert in backtest_exit_analyse.csv")
+
+        exit_cluster_stats = geclusterte_kennzahlen(exit_df, "gesamt_rendite_pct")
+        print(f"Davon unabhaengige Marktereignisse (Cluster): {exit_cluster_stats['anzahl_cluster']}")
+        print(f"Geclusterte Ø Gesamtrendite: {exit_cluster_stats['geclusterter_mittelwert_pct']}%\n")
 
         def _stat(spalte):
             s = exit_df[spalte].dropna()
