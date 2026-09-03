@@ -36,6 +36,7 @@ from dip_score import (
     berechne_indikator_serien,
     score_am_punkt,
     KAUFSIGNAL_SCHWELLE,
+    SOFT_KAUFSIGNAL_SCHWELLE,
     MARKT_BENCHMARK_TICKER,
 )
 
@@ -294,6 +295,41 @@ def simuliere_t1_t2_regel(close, ema50_serie, high_252_serie, i, max_tage=MAX_TA
         "exit_typ": exit_typ, "exit_tag": None,
         "exit_price": round(letzter_kurs, 4),
         "gesamt_rendite_pct": round(gesamt_rendite_pct, 2),
+        "haltedauer_tage": tage_bis_ende,
+    }
+
+
+def simuliere_prozent_ziel_exit(close, high, i, ziel_pct, max_tage=MAX_TAGE_EXIT_SIMULATION):
+    """Einfache Alternativ-Regel zu simuliere_t1_t2_regel: Kompletter
+    Verkauf (100%, keine Tranchen), sobald der Kurs +ziel_pct erreicht -
+    unabhaengig von EMA50/GD200/52W-Hoch. Exit-Kurs ist der Zielkurs
+    selbst (konservativ, nicht das ggf. hoehere Tageshoch)."""
+    buy_price = float(close.iloc[i])
+    ziel_kurs = buy_price * (1 + ziel_pct / 100)
+
+    for t in range(1, max_tage + 1):
+        idx = i + t
+        if idx >= len(close):
+            break
+        tages_hoch = float(high.iloc[idx])
+        if tages_hoch >= ziel_kurs:
+            return {
+                "exit_typ": "Ziel_erreicht",
+                "exit_tag": t,
+                "exit_price": round(ziel_kurs, 4),
+                "gesamt_rendite_pct": round(ziel_pct, 2),
+                "haltedauer_tage": t,
+            }
+
+    letzter_idx = min(i + max_tage, len(close) - 1)
+    letzter_kurs = float(close.iloc[letzter_idx])
+    tage_bis_ende = letzter_idx - i
+    rendite = ((letzter_kurs - buy_price) / buy_price) * 100
+    return {
+        "exit_typ": "offen_ziel_nicht_erreicht",
+        "exit_tag": None,
+        "exit_price": round(letzter_kurs, 4),
+        "gesamt_rendite_pct": round(rendite, 2),
         "haltedauer_tage": tage_bis_ende,
     }
 
@@ -618,6 +654,117 @@ def exit_analyse(df, serien_cache, schwelle=KAUFSIGNAL_SCHWELLE):
     return pd.DataFrame(zeilen)
 
 
+def episoden_tier(df, tier):
+    """Episoden fuer eine Signalstufe: 'soft' (SOFT_KAUFSIGNAL_SCHWELLE bis
+    knapp unter KAUFSIGNAL_SCHWELLE) oder 'voll' (>= KAUFSIGNAL_SCHWELLE)."""
+    if tier == "voll":
+        maske = df["dip_score"] >= KAUFSIGNAL_SCHWELLE
+    elif tier == "soft":
+        maske = (df["dip_score"] >= SOFT_KAUFSIGNAL_SCHWELLE) & (df["dip_score"] < KAUFSIGNAL_SCHWELLE)
+    else:
+        raise ValueError("tier muss 'soft' oder 'voll' sein")
+    return episoden_aus_maske(df, maske)
+
+
+def _episode_index(serien_cache, ep):
+    """Findet die iloc-Position einer Episode in der gecachten Kursreihe
+    ihres Tickers, oder None falls nicht auffindbar (Datenluecke o.ae.)."""
+    serien = serien_cache.get(ep["ticker"])
+    if serien is None:
+        return None, None
+    try:
+        i = serien["close"].index.get_loc(pd.Timestamp(ep["datum"]))
+    except KeyError:
+        return None, None
+    if isinstance(i, slice) or hasattr(i, "__len__"):
+        return None, None
+    return serien, i
+
+
+def ziel_exit_sweep(df, serien_cache, tier, ziel_kandidaten):
+    """Testet mehrere feste Ziel-Renditen fuer eine Signalstufe und
+    vergleicht Erreichquote, Haltedauer und tatsaechliche Rendite."""
+    episoden = episoden_tier(df, tier)
+    zeilen = []
+    for ziel_pct in ziel_kandidaten:
+        ergebnisse = []
+        for _, ep in episoden.iterrows():
+            serien, i = _episode_index(serien_cache, ep)
+            if serien is None:
+                continue
+            r = simuliere_prozent_ziel_exit(serien["close"], serien["high"], i, ziel_pct)
+            r["datum"] = ep["datum"]
+            ergebnisse.append(r)
+
+        edf = pd.DataFrame(ergebnisse)
+        if edf.empty:
+            zeilen.append({"ziel_pct": ziel_pct, "anzahl_episoden": 0})
+            continue
+
+        cluster_stats = geclusterte_kennzahlen(edf, "gesamt_rendite_pct")
+        erreicht = edf[edf["exit_typ"] == "Ziel_erreicht"]
+        zeilen.append({
+            "ziel_pct": ziel_pct,
+            "anzahl_episoden": len(edf),
+            "anzahl_cluster": cluster_stats["anzahl_cluster"],
+            "erreichquote_pct": round(len(erreicht) / len(edf) * 100, 1),
+            "avg_tage_bis_ziel": (
+                round(erreicht["haltedauer_tage"].mean(), 1) if len(erreicht) > 0 else None
+            ),
+            "avg_gesamtrendite_pct": round(edf["gesamt_rendite_pct"].mean(), 2),
+            "geclusterte_rendite_pct": cluster_stats["geclusterter_mittelwert_pct"],
+        })
+    return pd.DataFrame(zeilen)
+
+
+def exit_regel_vergleich(df, serien_cache):
+    """Beantwortet: EMA50/52W-Hoch als Ziel (alte Regel) oder feste
+    Zielrendite je Signalstufe - was schneidet in den Daten besser ab?"""
+    print(f"\n{'=' * 60}")
+    print("EXIT-REGEL-VERGLEICH: EMA50-Regel vs. feste Zielrendite")
+    print(f"{'=' * 60}")
+
+    ziel_kandidaten = {
+        "soft": [3.0, 4.0, 5.0, 6.0, 7.0],
+        "voll": [7.0, 8.0, 10.0, 12.0, 15.0],
+    }
+    labels = {
+        "soft": f"Softes Signal ({SOFT_KAUFSIGNAL_SCHWELLE:.0f}-{KAUFSIGNAL_SCHWELLE - 1:.0f})",
+        "voll": f"Volles Signal (>= {KAUFSIGNAL_SCHWELLE:.0f})",
+    }
+
+    for tier in ["soft", "voll"]:
+        episoden = episoden_tier(df, tier)
+        print(f"\n--- {labels[tier]}: {len(episoden)} Episoden ---")
+
+        alte_ergebnisse = []
+        for _, ep in episoden.iterrows():
+            serien, i = _episode_index(serien_cache, ep)
+            if serien is None:
+                continue
+            r = simuliere_t1_t2_regel(serien["close"], serien["ema50"], serien["high_252"], i)
+            r["datum"] = ep["datum"]
+            alte_ergebnisse.append(r)
+        alte_df = pd.DataFrame(alte_ergebnisse)
+
+        if not alte_df.empty:
+            alte_cluster = geclusterte_kennzahlen(alte_df, "gesamt_rendite_pct")
+            print(f"\n  Alte Regel (EMA50 / 52W-Hoch / dynamischer Stop):")
+            print(f"    Ø Rendite: {alte_df['gesamt_rendite_pct'].mean():+.2f}% "
+                  f"(geclustert: {alte_cluster['geclusterter_mittelwert_pct']}%)")
+            print(f"    Ø Haltedauer: {alte_df['haltedauer_tage'].mean():.1f} Tage, "
+                  f"n={len(alte_df)}, Cluster={alte_cluster['anzahl_cluster']}")
+        else:
+            print("\n  Alte Regel: keine auswertbaren Episoden.")
+
+        print(f"\n  Feste Zielrenditen im Vergleich:")
+        sweep = ziel_exit_sweep(df, serien_cache, tier, ziel_kandidaten[tier])
+        print(sweep.to_string(index=False))
+
+    print("\n  Hinweis: 'geclusterte_rendite_pct' ist die robustere Zahl bei")
+    print("  zeitlich gehaeuften Signalen (siehe Schwellen-Sweep-Hinweis oben).")
+
+
 def zusammenfassung(df, label=""):
     print(f"\n{'=' * 60}")
     print(f"AUSWERTUNG {label}")
@@ -743,6 +890,8 @@ def main():
         bt_eff = exit_df["bester_tag_effizienz"].dropna()
         if len(bt_eff) > 0:
             print(f"    Ø an Tag {bt_eff.mean():.1f}")
+
+    exit_regel_vergleich(df, serien_cache)
 
     print("\n\n--- ZUSATZVALIDIERUNG: etablierte, langjaehrige Sektor-ETFs (USD) ---")
     zusatz_ergebnisse = []
