@@ -45,7 +45,13 @@ from dip_score import (
 ISIN_DATEI = "isin.txt"
 VORSCHAU_TAGE = [5, 7, 10, 15, 21]     # Handelstage fuer feste Forward-Return-Punkte
 HAUPT_VORSCHAU = 21                    # entspricht eurem ~1-Monats-Ziel
-GEWINN_ZIEL_PCT = 10.0                 # euer 10%+-Ziel
+ZIEL_SCHWELLEN = [
+    ("2pct", 2.0),
+    ("3pct", 3.0),
+    ("5pct", 5.0),
+    ("7_5pct", 7.5),
+    ("10pct", 10.0),
+]  # eure Zielrenditen-Bandbreite (2% bis 10%+), Fenster = MAX_TAGE_EXIT_SIMULATION
 MAX_TAGE_EXIT_SIMULATION = 40          # Obergrenze fuer Tag-fuer-Tag-Kurve & T1/T2-Sim
 SCHWELLEN_SWEEP_BEREICH = range(30, 95, 5)  # Kandidaten-Schwellen fuer Frage 1
 CLUSTER_MAX_LUECKE_TAGE = 7            # Episoden, die hoechstens so viele Kalendertage
@@ -148,18 +154,32 @@ def forward_max_drawdown(low, close, i, tage):
     return ((tiefster - close.iloc[i]) / close.iloc[i]) * 100
 
 
-def forward_ziel_erreicht(high, close, i, tage, ziel_pct):
-    """Wurde innerhalb der naechsten `tage` Handelstage +ziel_pct erreicht?
-    Gibt (bool, tage_bis_treffer) zurueck, tage_bis_treffer=None falls nie."""
-    if i + tage >= len(high):
-        return None, None
-    ziel_kurs = close.iloc[i] * (1 + ziel_pct / 100)
-    fenster = high.iloc[i + 1: i + 1 + tage]
-    treffer = fenster[fenster >= ziel_kurs]
-    if treffer.empty:
-        return False, None
-    tage_bis_treffer = fenster.index.get_loc(treffer.index[0]) + 1
-    return True, tage_bis_treffer
+def ziele_erreicht_multi(high, close, i, schwellen=ZIEL_SCHWELLEN, max_tage=MAX_TAGE_EXIT_SIMULATION):
+    """Fuer JEDE Ziel-Rendite in `schwellen` (z.B. 2/3/5/7,5/10%): wurde sie
+    innerhalb `max_tage` Handelstagen erreicht, und nach wie vielen Tagen
+    (erstes Erreichen, auf Basis des Tageshochs)? Beantwortet direkt:
+    'Bei welchem Score habe ich eine hohe Wahrscheinlichkeit auf mindestens
+    +X% in einem ueberschaubaren Zeitraum?' - fuer mehrere X gleichzeitig,
+    statt nur fuer ein einzelnes fest verdrahtetes Ziel."""
+    ergebnis = {}
+    if i + 1 >= len(high):
+        for label, _ in schwellen:
+            ergebnis[f"erreicht_{label}"] = None
+            ergebnis[f"tage_bis_{label}"] = None
+        return ergebnis
+
+    fenster = high.iloc[i + 1: i + 1 + max_tage]
+    for label, ziel_pct in schwellen:
+        ziel_kurs = close.iloc[i] * (1 + ziel_pct / 100)
+        treffer = fenster[fenster >= ziel_kurs]
+        if treffer.empty:
+            ergebnis[f"erreicht_{label}"] = False
+            ergebnis[f"tage_bis_{label}"] = None
+        else:
+            tage_bis_treffer = fenster.index.get_loc(treffer.index[0]) + 1
+            ergebnis[f"erreicht_{label}"] = True
+            ergebnis[f"tage_bis_{label}"] = tage_bis_treffer
+    return ergebnis
 
 
 def rendite_kurve(close, i, max_tage=MAX_TAGE_EXIT_SIMULATION):
@@ -324,11 +344,7 @@ def analysiere_etf(isin, ticker, sektor, regime_serie):
             zeile[f"return_{t}t"] = forward_return(close, i, t)
 
         zeile["max_drawdown_21t"] = forward_max_drawdown(low, close, i, HAUPT_VORSCHAU)
-        ziel_erreicht, tage_bis_ziel = forward_ziel_erreicht(
-            high, close, i, HAUPT_VORSCHAU, GEWINN_ZIEL_PCT
-        )
-        zeile["ziel_erreicht_21t"] = ziel_erreicht
-        zeile["tage_bis_ziel"] = tage_bis_ziel
+        zeile.update(ziele_erreicht_multi(high, close, i))
 
         ergebnisse.append(zeile)
 
@@ -405,20 +421,25 @@ def schwellen_sweep(df, schwellen=SCHWELLEN_SWEEP_BEREICH):
     """FRAGE 1: Welche Dip-Score-Schwelle ist optimal? Wertet fuer jede
     Kandidaten-Schwelle Trefferquote, Ø-Gewinn/-Verlust und den
     Erwartungswert aus - sowohl roh (pro Episode) als auch geclustert
-    (pro unabhaengigem Marktereignis), damit sichtbar wird, wie stark
-    zeitliche Haeufung die rohe Zahl verzerrt."""
+    (pro unabhaengigem Marktereignis) - PLUS fuer jede Ziel-Rendite aus
+    ZIEL_SCHWELLEN (2/3/5/7,5/10%) die Trefferquote innerhalb von
+    MAX_TAGE_EXIT_SIMULATION Handelstagen. Das beantwortet direkt: 'Bei
+    welcher Schwelle habe ich eine hohe Wahrscheinlichkeit auf mindestens
+    +X%?' - fuer mehrere X gleichzeitig."""
     zeilen = []
     for schwelle in schwellen:
         episoden = episoden_zaehlen(df, schwelle=schwelle)
         valide = episoden.dropna(subset=[f"return_{HAUPT_VORSCHAU}t"])
         if len(valide) == 0:
-            zeilen.append({
+            zeile = {
                 "schwelle": schwelle, "anzahl_episoden": 0, "anzahl_cluster": 0,
                 "trefferquote_pct": None, "avg_gewinn_pct": None,
                 "avg_verlust_pct": None, "erwartungswert_pct": None,
                 "geclusterter_erwartungswert_pct": None,
-                "ziel_erreicht_pct": None,
-            })
+            }
+            for label, _ in ZIEL_SCHWELLEN:
+                zeile[f"quote_{label}"] = None
+            zeilen.append(zeile)
             continue
 
         rendite_spalte = valide[f"return_{HAUPT_VORSCHAU}t"]
@@ -428,10 +449,9 @@ def schwellen_sweep(df, schwellen=SCHWELLEN_SWEEP_BEREICH):
         avg_gewinn = gewinner.mean() if len(gewinner) > 0 else 0.0
         avg_verlust = verlierer.mean() if len(verlierer) > 0 else 0.0
         erwartungswert = rendite_spalte.mean()
-        ziel_rate = valide["ziel_erreicht_21t"].mean() * 100
         cluster_stats = geclusterte_kennzahlen(valide, f"return_{HAUPT_VORSCHAU}t")
 
-        zeilen.append({
+        zeile = {
             "schwelle": schwelle,
             "anzahl_episoden": len(valide),
             "anzahl_cluster": cluster_stats["anzahl_cluster"],
@@ -440,8 +460,15 @@ def schwellen_sweep(df, schwellen=SCHWELLEN_SWEEP_BEREICH):
             "avg_verlust_pct": round(avg_verlust, 2),
             "erwartungswert_pct": round(erwartungswert, 2),
             "geclusterter_erwartungswert_pct": cluster_stats["geclusterter_mittelwert_pct"],
-            "ziel_erreicht_pct": round(ziel_rate, 1),
-        })
+        }
+        for label, _ in ZIEL_SCHWELLEN:
+            spalte = f"erreicht_{label}"
+            if spalte in valide.columns and valide[spalte].notna().any():
+                quote = valide[spalte].dropna().mean() * 100
+                zeile[f"quote_{label}"] = round(quote, 1)
+            else:
+                zeile[f"quote_{label}"] = None
+        zeilen.append(zeile)
     return pd.DataFrame(zeilen)
 
 
@@ -512,6 +539,10 @@ def zusammenfassung(df, label=""):
     print("  (z.B. zaehlt ein Tag mit 33 gleichzeitigen Signalen als 1 statt 33) - das")
     print("  ist die robustere, aber konservativere Zahl. 'anzahl_cluster' ist die")
     print("  eigentliche unabhaengige Stichprobengroesse, nicht 'anzahl_episoden'.")
+    print(f"\n  'quote_Xpct' = Anteil der Episoden dieser Schwelle, die +X% innerhalb von")
+    print(f"  {MAX_TAGE_EXIT_SIMULATION} Handelstagen erreicht haben (nicht auf {HAUPT_VORSCHAU} Tage")
+    print("  begrenzt wie die anderen Kennzahlen) - direkte Antwort auf 'bei welcher")
+    print("  Schwelle ist die Wahrscheinlichkeit auf +X% hoch?'.")
 
     return sweep
 
