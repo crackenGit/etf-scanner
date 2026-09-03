@@ -924,9 +924,12 @@ with tab2:
                 shares = float(pos.get("shares", 0))
                 ist_alt_position = pos.get("partially_sold", False)
 
-                # Signalstufe: portfolio.py ('signal_stufe') > gespeicherter
-                # Score ('dip_score_bei_kauf') > manuelle Zuordnung oben > unbekannt.
-                stufe = pos.get("signal_stufe")
+                # Signalstufe: manuelle Zuordnung oben ist für die dort
+                # gelisteten ISINs bindend > sonst portfolio.py ('signal_stufe')
+                # > gespeicherter Score ('dip_score_bei_kauf') > unbekannt.
+                stufe = MANUELLE_SIGNAL_STUFEN.get(pos["isin"])
+                if stufe not in ("soft", "voll"):
+                    stufe = pos.get("signal_stufe")
                 if stufe not in ("soft", "voll"):
                     gespeicherter_score = pos.get("dip_score_bei_kauf")
                     stufe = (
@@ -936,8 +939,6 @@ with tab2:
                     )
                     if stufe == "kein":
                         stufe = None
-                if stufe not in ("soft", "voll"):
-                    stufe = MANUELLE_SIGNAL_STUFEN.get(pos["isin"])
 
                 if ist_alt_position:
                     ziel_pct, ziel_kurs = None, None
@@ -1024,8 +1025,12 @@ with tab2:
                     "unbekannt": "❓ unbekannt",
                 }.get(s, "❓ unbekannt")
             )
-            display_df["Zielkurs"] = df_portfolio["Zielkurs"].map(
-                lambda x: f"{x:.2f} €" if pd.notna(x) else "-"
+            display_df["Zielkurs"] = df_portfolio.apply(
+                lambda r: (
+                    f"{r['Zielkurs']:.2f} € 🔥" if r["Ziel_Erreicht"]
+                    else (f"{r['Zielkurs']:.2f} €" if pd.notna(r["Zielkurs"]) else "-")
+                ),
+                axis=1,
             )
             display_df["Abstand z. Ziel"] = df_portfolio.apply(
                 lambda r: (
@@ -1045,14 +1050,6 @@ with tab2:
                 styles = pd.DataFrame("", index=df.index, columns=df.columns)
                 for idx in df.index:
                     row_raw = df_portfolio.loc[idx]
-                    if row_raw["Ziel_Erreicht"]:
-                        color = (
-                            "background-color: #d4edda; color: #155724;"
-                            " font-weight: bold;"
-                        )
-                        for col in df.columns:
-                            styles.loc[idx, col] = color
-
                     styles.loc[idx, "Performance"] = performance_farbe(
                         row_raw["Performance_Pct"]
                     )
