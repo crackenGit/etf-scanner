@@ -318,6 +318,8 @@ def analysiere_etf(isin, ticker, sektor, regime_serie):
 
     indikatoren = berechne_indikator_serien(close, high, low)
     high_252 = high.rolling(window=252, min_periods=1).max()
+    hoch_10t = close.rolling(window=10, min_periods=1).max()
+    hoch_20t = close.rolling(window=20, min_periods=1).max()
 
     ergebnisse = []
     start_i = 199  # erster Index mit vollstaendigem GD200 (0-indexiert)
@@ -344,6 +346,14 @@ def analysiere_etf(isin, ticker, sektor, regime_serie):
             zeile[f"return_{t}t"] = forward_return(close, i, t)
 
         zeile["max_drawdown_21t"] = forward_max_drawdown(low, close, i, HAUPT_VORSCHAU)
+        # Wie stark ist der Kurs VOR dem Signal gefallen? (rueckblickend,
+        # nicht Teil des Scores - fuer Punkt 6 der Einzelfaktor-Analyse)
+        zeile["drawdown_10t_vor_signal_pct"] = round(
+            ((close.iloc[i] - hoch_10t.iloc[i]) / hoch_10t.iloc[i]) * 100, 2
+        )
+        zeile["drawdown_20t_vor_signal_pct"] = round(
+            ((close.iloc[i] - hoch_20t.iloc[i]) / hoch_20t.iloc[i]) * 100, 2
+        )
         zeile.update(ziele_erreicht_multi(high, close, i))
 
         ergebnisse.append(zeile)
