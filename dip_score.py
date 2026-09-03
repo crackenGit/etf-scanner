@@ -6,6 +6,19 @@ Backtesting-Skript (backtest.py). Einzige Quelle der Wahrheit für die
 Score-Formel, damit die Live-App und der Backtest garantiert exakt
 dasselbe berechnen - keine Duplikation, kein Auseinanderdriften.
 
+Stand nach Backtest-Auswertung (277.000+ ETF-Tage, Einzelfaktor-Tests):
+- RSI-Score: von "je tiefer desto besser" auf einen Sweet Spot bei RSI 25
+  umgestellt - RSI<20 performte im Backtest SCHLECHTER als RSI 20-30
+  (vermutlich eher Crash-Signal als normaler Dip).
+- Turnaround-Score: ENTFERNT. Zeigte in drei unabhängigen Tests
+  (Korrelation, grobe Buckets, isolierte Quote-Analyse) durchgehend
+  keine Vorhersagekraft, trotz dreimaliger Lockerung der Formel.
+- Kursrückgang-Tiefe (drawdown_20t_pct): NEU aufgenommen, ersetzt den
+  Turnaround-Score im Punktbudget. War das mit Abstand stärkste
+  Einzelsignal im Backtest (quote_10pct stieg sauber von 23% auf 80%
+  mit zunehmender Rückgangstiefe) - "größerer Dip = größerer Rebound"
+  statt "fallendes Messer" bestätigt sich hier klar.
+
 Enthält bewusst KEINE Streamlit- oder yfinance-Abhängigkeiten, damit es
 sich auch von einem reinen Kommandozeilen-Skript (backtest.py) ohne
 Streamlit-Kontext importieren lässt.
@@ -43,19 +56,12 @@ def berechne_indikator_serien(close: pd.Series, high: pd.Series, low: pd.Series)
     avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
     rsi = 100 - (100 / (1 + (avg_gain / avg_loss)))
 
-    prev_close = close.shift(1)
-    true_range = pd.concat(
-        [
-            (high - low),
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    atr14 = true_range.rolling(window=14).mean()
-
     gd200_vor_10d = gd200.shift(10)
     gd200_steigt = gd200 > gd200_vor_10d
+
+    # Kursrückgang vom 20-Tage-Hoch bis heute (negativ oder 0)
+    hoch_20t = close.rolling(window=20, min_periods=1).max()
+    drawdown_20t_pct = ((close - hoch_20t) / hoch_20t) * 100
 
     return pd.DataFrame({
         "close": close,
@@ -66,11 +72,9 @@ def berechne_indikator_serien(close: pd.Series, high: pd.Series, low: pd.Series)
         "gd200_steigt": gd200_steigt,
         "ema50": ema50,
         "rsi": rsi,
-        "rsi_gestern": rsi.shift(1),
         "avg_gain": avg_gain,
         "avg_loss": avg_loss,
-        "atr14": atr14,
-        "vortages_hoch": high.shift(1),
+        "drawdown_20t_pct": drawdown_20t_pct,
     })
 
 
@@ -91,17 +95,19 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
     row = indikatoren.iloc[i]
 
     c_today = float(row["close"])
-    tages_tief = float(row["low"]) if not pd.isna(row["low"]) else c_today
     rsi_today = float(row["rsi"]) if not pd.isna(row["rsi"]) else 50.0
-    rsi_gestern = float(row["rsi_gestern"]) if not pd.isna(row["rsi_gestern"]) else rsi_today
     gd200_heute = float(row["gd200"]) if not pd.isna(row["gd200"]) else 0.0
     ema50_heute = float(row["ema50"]) if not pd.isna(row["ema50"]) else c_today
     gd200_steigt = bool(row["gd200_steigt"]) if not pd.isna(row["gd200_steigt"]) else False
-    atr14_heute = float(row["atr14"]) if not pd.isna(row["atr14"]) else 0.0
-    vortages_hoch = float(row["vortages_hoch"]) if not pd.isna(row["vortages_hoch"]) else c_today
+    drawdown_20t_pct = (
+        float(row["drawdown_20t_pct"]) if not pd.isna(row["drawdown_20t_pct"]) else 0.0
+    )
 
-    # 1) RSI-Überverkauft-Tiefe (max. 20 Punkte)
-    rsi_score = min(20.0, max(0.0, (45.0 - rsi_today)) * 1.5)
+    # 1) RSI-Sweet-Spot (max. 20 Punkte): Peak bei RSI 25, faellt zu beiden
+    #    Seiten linear ab. Backtest zeigte RSI<20 schlechter als RSI 20-30 -
+    #    vermutlich eher Crash-Signal als normaler, kaufbarer Dip.
+    rsi_peak = 25.0
+    rsi_score = max(0.0, 20.0 - abs(rsi_today - rsi_peak) * 0.8)
 
     # 2) Trend intakt: EMA50 > GD200 UND GD200 steigt (max. 15 Punkte)
     trend_score = (7.5 if ema50_heute > gd200_heute else 0.0) + (
@@ -120,29 +126,15 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
     )
     ema50_score = min(15.0, ema50_upside_pct * 1.2)
 
-    # 5) Turnaround-Qualität (max. 35 Punkte - größte Einzelkomponente)
-    bounce_atr_ratio = (
-        (c_today - tages_tief) / atr14_heute if atr14_heute > 0 else 0.0
-    )
-    turnaround_bounce_score = min(15.0, max(0.0, bounce_atr_ratio) * 40.0)
-
-    turnaround_rsi_score = min(10.0, max(0.0, rsi_today - rsi_gestern) * 3.0)
-
-    if c_today >= vortages_hoch:
-        turnaround_bestaetigung = 10.0
-    elif atr14_heute > 0:
-        naehe_faktor = max(0.0, 1.0 - (vortages_hoch - c_today) / atr14_heute)
-        turnaround_bestaetigung = round(min(6.0, naehe_faktor * 6.0), 1)
-    else:
-        turnaround_bestaetigung = 0.0
-
-    turnaround_score = min(
-        35.0,
-        turnaround_bounce_score + turnaround_rsi_score + turnaround_bestaetigung,
-    )
+    # 5) Kursrückgang-Tiefe vor dem Signal (max. 35 Punkte - staerkste
+    #    Einzelkomponente laut Backtest, ersetzt den wirkungslosen
+    #    Turnaround-Score). Rueckgang vom 20-Tage-Hoch, linear bis zum
+    #    Cap bei ca. -29 % (deckt sich mit dem staerksten Backtest-Bucket).
+    drawdown_magnitude = max(0.0, -drawdown_20t_pct)  # positive Groesse
+    drawdown_score = min(35.0, drawdown_magnitude * 1.2)
 
     basis_score = rsi_score + trend_score + gd200_score + ema50_score  # max. 65
-    dip_score_roh = basis_score + turnaround_score  # max. 100
+    dip_score_roh = basis_score + drawdown_score  # max. 100
 
     # 6) Marktregime-Filter
     regime_multiplier = 1.0 if regime_ok else REGIME_MALUS_FAKTOR
@@ -165,11 +157,12 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
         "gd200": gd200_heute,
         "ema50": ema50_heute,
         "gd200_steigt": gd200_steigt,
+        "drawdown_20t_pct": round(drawdown_20t_pct, 2),
         "rsi_score": round(rsi_score, 1),
         "trend_score": round(trend_score, 1),
         "gd200_score": round(gd200_score, 1),
         "ema50_score": round(ema50_score, 1),
-        "turnaround_score": round(turnaround_score, 1),
+        "drawdown_score": round(drawdown_score, 1),
         "regime_multiplier": regime_multiplier,
         "gd200_bruch_malus_faktor": round(gd200_bruch_malus_faktor, 3),
         "dip_score": dip_score,
