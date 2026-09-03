@@ -319,7 +319,6 @@ def analysiere_etf(isin, ticker, sektor, regime_serie):
     indikatoren = berechne_indikator_serien(close, high, low)
     high_252 = high.rolling(window=252, min_periods=1).max()
     hoch_10t = close.rolling(window=10, min_periods=1).max()
-    hoch_20t = close.rolling(window=20, min_periods=1).max()
 
     ergebnisse = []
     start_i = 199  # erster Index mit vollstaendigem GD200 (0-indexiert)
@@ -346,13 +345,11 @@ def analysiere_etf(isin, ticker, sektor, regime_serie):
             zeile[f"return_{t}t"] = forward_return(close, i, t)
 
         zeile["max_drawdown_21t"] = forward_max_drawdown(low, close, i, HAUPT_VORSCHAU)
-        # Wie stark ist der Kurs VOR dem Signal gefallen? (rueckblickend,
-        # nicht Teil des Scores - fuer Punkt 6 der Einzelfaktor-Analyse)
+        # Wie stark ist der Kurs VOR dem Signal auf 10-Tage-Sicht gefallen?
+        # (10-Tage-Variante als Ergaenzung - die 20-Tage-Variante liefert
+        # score_result bereits als "drawdown_20t_pct" mit)
         zeile["drawdown_10t_vor_signal_pct"] = round(
             ((close.iloc[i] - hoch_10t.iloc[i]) / hoch_10t.iloc[i]) * 100, 2
-        )
-        zeile["drawdown_20t_vor_signal_pct"] = round(
-            ((close.iloc[i] - hoch_20t.iloc[i]) / hoch_20t.iloc[i]) * 100, 2
         )
         zeile.update(ziele_erreicht_multi(high, close, i))
 
@@ -365,17 +362,28 @@ def analysiere_etf(isin, ticker, sektor, regime_serie):
     return ergebnisse, serien
 
 
+def episoden_aus_maske(df, maske_serie):
+    """Fasst aufeinanderfolgende Tage, an denen `maske_serie` True ist,
+    PRO ETF zu EINER Episode zusammen (nur der erste Tag zaehlt). Basis-
+    Baustein fuer episoden_zaehlen() und alle Einzelfaktor-Analysen unten -
+    `maske_serie` wird ueber den Original-Index von `df` ausgerichtet,
+    nicht positionsbasiert (wichtig, da df hier nach isin/datum sortiert
+    wird)."""
+    df = df.sort_values(["isin", "datum"]).copy()
+    df["_maske"] = maske_serie.reindex(df.index)
+    vorheriger_tag = df.groupby("isin")["_maske"].shift(1, fill_value=False)
+    df["episode_start"] = df["_maske"] & (~vorheriger_tag)
+    ergebnis = df[df["episode_start"]].copy()
+    return ergebnis.drop(columns=["_maske"])
+
+
 def episoden_zaehlen(df, score_spalte="dip_score", schwelle=KAUFSIGNAL_SCHWELLE):
     """Fasst aufeinanderfolgende Tage mit score>=schwelle PRO ETF zu EINER
     Episode zusammen (nur der erste Tag zaehlt), damit z.B. 5 Tage am
     Stueck ueber der Schwelle nicht als 5 unabhaengige Ereignisse in die
     Statistik eingehen. Deckt NICHT die Haeufung UEBER Ticker hinweg ab
     (z.B. 33 ETFs am selben Tag) - dafuer siehe cluster_zuweisen()."""
-    df = df.sort_values(["isin", "datum"]).copy()
-    df["ueber_schwelle"] = df[score_spalte] >= schwelle
-    vorheriger_tag = df.groupby("isin")["ueber_schwelle"].shift(1, fill_value=False)
-    df["episode_start"] = df["ueber_schwelle"] & (~vorheriger_tag)
-    return df[df["episode_start"]].copy()
+    return episoden_aus_maske(df, df[score_spalte] >= schwelle)
 
 
 def cluster_zuweisen(episoden_df, max_luecke_tage=CLUSTER_MAX_LUECKE_TAGE):
@@ -482,6 +490,106 @@ def schwellen_sweep(df, schwellen=SCHWELLEN_SWEEP_BEREICH):
     return pd.DataFrame(zeilen)
 
 
+# ==========================================
+# SCHRITT 3: EINZELFAKTOR-TESTS
+# Gemeinsames Muster fuer alle vier Analysen: Episoden aus einer Bedingung
+# bilden (episoden_aus_maske), dann dieselben Kennzahlen wie im Schwellen-
+# Sweep berechnen (Trefferquote, Erwartungswert, geclusterter Erwartungs-
+# wert, quote_Xpct) - damit alle Einzelfaktoren 1:1 vergleichbar sind.
+# ==========================================
+
+RSI_BINS = [(0, 20), (20, 25), (25, 30), (30, 35), (35, 40)]
+DRAWDOWN_BINS = [(-100, -30), (-30, -20), (-20, -10), (-10, -5), (-5, 0)]
+
+
+def _episoden_kennzahlen(valide, rendite_spalte=f"return_{HAUPT_VORSCHAU}t"):
+    """Gemeinsame Kennzahlen-Berechnung fuer eine bereits gefilterte
+    Episoden-Menge - von allen Einzelfaktor-Analysen genutzt."""
+    zeile = {"anzahl_episoden": len(valide)}
+    if len(valide) == 0:
+        zeile["anzahl_cluster"] = 0
+        return zeile
+    rendite = valide[rendite_spalte].dropna()
+    cluster_stats = geclusterte_kennzahlen(valide, rendite_spalte)
+    zeile["anzahl_cluster"] = cluster_stats["anzahl_cluster"]
+    if len(rendite) > 0:
+        zeile["trefferquote_pct"] = round((rendite > 0).mean() * 100, 1)
+        zeile["erwartungswert_pct"] = round(rendite.mean(), 2)
+    zeile["geclusterter_erwartungswert_pct"] = cluster_stats["geclusterter_mittelwert_pct"]
+    for label, _ in ZIEL_SCHWELLEN:
+        spalte = f"erreicht_{label}"
+        if spalte in valide.columns and valide[spalte].notna().any():
+            zeile[f"quote_{label}"] = round(valide[spalte].dropna().mean() * 100, 1)
+    return zeile
+
+
+def rsi_bin_analyse(df, bins=RSI_BINS):
+    """EINZELFAKTOR 1: RSI-Bereich isoliert (ChatGPT-Punkt 1) - unabhaengig
+    von Trend/GD200, nur die reine RSI-Tiefe. Hat den RSI-Sweet-Spot bei
+    25 im aktuellen Score begruendet."""
+    zeilen = []
+    for lo, hi in bins:
+        maske = (df["rsi"] >= lo) & (df["rsi"] < hi)
+        episoden = episoden_aus_maske(df, maske)
+        valide = episoden.dropna(subset=[f"return_{HAUPT_VORSCHAU}t"])
+        zeile = {"rsi_bereich": f"{lo}-{hi}"}
+        zeile.update(_episoden_kennzahlen(valide))
+        zeilen.append(zeile)
+    return pd.DataFrame(zeilen)
+
+
+def drawdown_bin_analyse(df, spalte="drawdown_20t_pct", bins=DRAWDOWN_BINS):
+    """EINZELFAKTOR 2: Wie stark ist der Kurs VOR dem Tag gefallen
+    (ChatGPT-Punkt 6) - testet, ob tiefere Dips bessere Rebounds oder eher
+    fallende Messer sind. War das staerkste Einzelsignal im Backtest und
+    ist mittlerweile selbst Score-Komponente (siehe dip_score.py) -
+    `spalte` zeigt standardmaessig auf das vom Score gelieferte Feld,
+    keine separate Berechnung mehr noetig."""
+    zeilen = []
+    for lo, hi in bins:
+        maske = (df[spalte] >= lo) & (df[spalte] < hi)
+        episoden = episoden_aus_maske(df, maske)
+        valide = episoden.dropna(subset=[f"return_{HAUPT_VORSCHAU}t"])
+        zeile = {"drawdown_bereich_pct": f"{lo} bis {hi}"}
+        zeile.update(_episoden_kennzahlen(valide))
+        zeilen.append(zeile)
+    return pd.DataFrame(zeilen)
+
+
+def jahres_robustheit(df, schwelle=KAUFSIGNAL_SCHWELLE):
+    """EINZELFAKTOR 3: Traegt das Signal bei der AKTUELLEN Kaufsignal-
+    Schwelle ueber mehrere Jahre, oder kommt die Performance nur aus
+    1-2 Marktphasen (ChatGPT-Punkt 14)?"""
+    episoden = episoden_zaehlen(df, schwelle=schwelle)
+    episoden = episoden.copy()
+    episoden["jahr"] = pd.to_datetime(episoden["datum"]).dt.year
+    zeilen = []
+    for jahr, gruppe in episoden.groupby("jahr"):
+        valide = gruppe.dropna(subset=[f"return_{HAUPT_VORSCHAU}t"])
+        zeile = {"jahr": int(jahr)}
+        zeile.update(_episoden_kennzahlen(valide))
+        zeilen.append(zeile)
+    return pd.DataFrame(zeilen)
+
+
+def einzelfaktor_analysen(df):
+    print(f"\n{'=' * 60}")
+    print("SCHRITT 3: EINZELFAKTOR-TESTS")
+    print(f"{'=' * 60}")
+
+    print("\n--- 1) RSI-Bereich isoliert ---")
+    print(rsi_bin_analyse(df).to_string(index=False))
+
+    print("\n--- 2) Kursrueckgang vor dem Tag (20-Tage-Hoch bis heute) ---")
+    print(drawdown_bin_analyse(df).to_string(index=False))
+
+    print(f"\n--- 3) Jahres-Robustheit bei Schwelle {KAUFSIGNAL_SCHWELLE:.0f} ---")
+    print(jahres_robustheit(df).to_string(index=False))
+    print("\n  Hinweis: Bei allen drei Tabellen gilt wie beim Schwellen-Sweep -")
+    print("  'anzahl_cluster' ist die eigentliche unabhaengige Stichprobengroesse.")
+    print("  Bei <~15-20 Clustern sind das Tendenzen, kein Beweis.")
+
+
 def exit_analyse(df, serien_cache, schwelle=KAUFSIGNAL_SCHWELLE):
     """FRAGE 2: Haltedauer vs. Verkaufskurs. Fuer jede Episode bei der
     aktuellen Kaufsignal-Schwelle wird sowohl die Tag-fuer-Tag-Rendite-
@@ -532,7 +640,7 @@ def zusammenfassung(df, label=""):
     print(bucket_stats)
 
     print("\nKorrelation der einzelnen Score-Komponenten mit dem Forward-Return:")
-    for komponente in ["rsi_score", "trend_score", "gd200_score", "ema50_score", "turnaround_score"]:
+    for komponente in ["rsi_score", "trend_score", "gd200_score", "ema50_score", "drawdown_score"]:
         k_df = df[[komponente, f"return_{HAUPT_VORSCHAU}t"]].dropna()
         if len(k_df) > 1:
             k = k_df.corr().iloc[0, 1]
@@ -590,6 +698,7 @@ def main():
     print(f"\n{len(df)} ETF-Tage gespeichert in backtest_ergebnisse.csv")
 
     zusammenfassung(df, label="- Euer ETF-Universum")
+    einzelfaktor_analysen(df)
 
     print(f"\n{'-' * 60}")
     print(f"FRAGE 2: Haltedauer vs. Verkaufskurs (Episoden bei Schwelle {KAUFSIGNAL_SCHWELLE:.0f})")
