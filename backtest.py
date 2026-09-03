@@ -6,27 +6,21 @@ Historischer Backtest fuer die Dip-Score-Logik aus dip_score.py.
 WICHTIG: Dieses Skript braucht Internetzugang (yfinance) sowie eure
 isin.txt im selben Ordner. Es wurde in dieser Sandbox NICHT gegen echte
 Daten ausgefuehrt (kein Netzwerkzugriff hier verfuegbar) - bitte lokal
-laufen lassen. Falls Fehler auftreten, gerne Rueckmeldung geben, dann
+laufen lassen. Falls Fehler auftauchen, gerne Rueckmeldung geben, dann
 fixe ich das Skript gezielt.
 
 Ablauf:
 1. ETF-Universum aus isin.txt laden (gleiches Format wie app.py).
-2. Fuer jeden ETF die maximal verfuegbare Historie laden (nicht auf
-   einen festen Zeitraum wie "5 Jahre" beschraenkt, da eure ETFs
-   unterschiedlich alt sind - manche vielleicht nur ~1 Jahr).
-3. Einmalig die Benchmark-Historie laden und deren eigenen GD200-Status
-   ueber die Zeit bestimmen (fuer den Marktregime-Filter).
+2. Fuer jeden ETF die maximal verfuegbare Historie laden.
+3. Einmalig die Benchmark-Historie laden (Marktregime-Filter).
 4. Fuer jeden Handelstag ab Tag 200 (GD200 verfuegbar) bis 21 Tage vor
-   Ende der Historie (Vorschau-Fenster) den Score + die Forward-Returns
-   berechnen.
-5. Ergebnisse als CSV speichern + zusammenfassende Auswertung ausgeben:
-   Korrelation Score<->Return, Score-Buckets, Episoden-Auswertung fuer
-   die Kaufsignal-Schwelle, Einzelkomponenten-Korrelation.
-6. Zusatzvalidierung auf einer Handvoll etablierter, langjaehriger
-   US-Sektor-ETFs (Select Sector SPDRs, 20+ Jahre Historie), um die
-   grundsaetzliche Score-Logik auch auf einer breiteren/laengeren
-   Datenbasis zu pruefen als es euer eigenes, juengeres Universum
-   hergibt.
+   Ende der Historie den Score + feste Forward-Returns (5/7/10/15/21
+   Tage) berechnen. -> zusammenfassung() / schwellen_sweep()
+5. Fuer die Episoden bei der AKTUELLEN Kaufsignal-Schwelle zusaetzlich:
+   Tag-fuer-Tag-Renditekurve (bis 40 Tage) UND Simulation eurer echten
+   T1/T2-Exit-Regel (EMA50/52-Wochen-Hoch/dynamischer Stop), verglichen
+   mit festen Haltedauern und dem theoretischen Optimum.
+6. Zusatzvalidierung auf etablierten, langjaehrigen US-Sektor-ETFs.
 
 Aufruf: python backtest.py
 Benoetigte Pakete: pandas, yfinance (dieselben wie fuer app.py)
@@ -49,9 +43,11 @@ from dip_score import (
 # KONFIGURATION
 # ==========================================
 ISIN_DATEI = "isin.txt"
-VORSCHAU_TAGE = [5, 10, 15, 21]        # Handelstage fuer Forward-Return-Fenster
+VORSCHAU_TAGE = [5, 7, 10, 15, 21]     # Handelstage fuer feste Forward-Return-Punkte
 HAUPT_VORSCHAU = 21                    # entspricht eurem ~1-Monats-Ziel
 GEWINN_ZIEL_PCT = 10.0                 # euer 10%+-Ziel
+MAX_TAGE_EXIT_SIMULATION = 40          # Obergrenze fuer Tag-fuer-Tag-Kurve & T1/T2-Sim
+SCHWELLEN_SWEEP_BEREICH = range(30, 95, 5)  # Kandidaten-Schwellen fuer Frage 1
 API_PAUSE_SEKUNDEN = 0.3               # kleine Pause zwischen Downloads
 
 # Etablierte, sehr liquide US-Sektor-ETFs mit 20+ Jahren Historie -
@@ -163,20 +159,142 @@ def forward_ziel_erreicht(high, close, i, tage, ziel_pct):
     return True, tage_bis_treffer
 
 
-def backtest_einzelnes_etf(isin, ticker, sektor, regime_serie):
+def rendite_kurve(close, i, max_tage=MAX_TAGE_EXIT_SIMULATION):
+    """Tag-fuer-Tag-Rendite ab Tag i (Index-Position) bis max_tage Tage
+    voraus. Liefert u.a. den besten Tag nach Gesamtrendite UND nach
+    Rendite/Tag (Kapital-Effizienz) - das theoretische (nicht handelbare)
+    Optimum als obere Vergleichslinie."""
+    tage, renditen = [], []
+    for t in range(1, max_tage + 1):
+        idx = i + t
+        if idx >= len(close):
+            break
+        rendite = ((close.iloc[idx] - close.iloc[i]) / close.iloc[i]) * 100
+        tage.append(t)
+        renditen.append(rendite)
+
+    ergebnis = {
+        "bester_tag_gesamt": None,
+        "bester_rendite_gesamt": None,
+        "bester_tag_effizienz": None,
+        "beste_rendite_pro_tag": None,
+        "rendite_tag7": None,
+        "rendite_tag21": None,
+    }
+    if not renditen:
+        return ergebnis
+
+    serie = pd.Series(renditen, index=tage)
+    tage_index = pd.Series(tage, index=tage, dtype=float)
+    pro_tag = serie / tage_index
+
+    ergebnis["bester_tag_gesamt"] = int(serie.idxmax())
+    ergebnis["bester_rendite_gesamt"] = round(float(serie.max()), 2)
+    ergebnis["bester_tag_effizienz"] = int(pro_tag.idxmax())
+    ergebnis["beste_rendite_pro_tag"] = round(float(pro_tag.max()), 3)
+    if 7 in serie.index:
+        ergebnis["rendite_tag7"] = round(float(serie.loc[7]), 2)
+    if 21 in serie.index:
+        ergebnis["rendite_tag21"] = round(float(serie.loc[21]), 2)
+    return ergebnis
+
+
+def simuliere_t1_t2_regel(close, ema50_serie, high_252_serie, i, max_tage=MAX_TAGE_EXIT_SIMULATION):
+    """Simuliert EURE tatsaechliche Exit-Regel aus app.py (Tab 2):
+    T1 (50%) sobald Kurs >= EMA50 (an diesem Tag - die 'wandernde' EMA50,
+    exakt wie aktuell in der App), danach T2 (restliche 50%) entweder bei
+    52-Wochen-Hoch * 0.99 oder beim dynamischen Stop (Kaufkurs + 50% des
+    T1-Gewinns), je nachdem was zuerst eintritt."""
+    buy_price = float(close.iloc[i])
+    t1_triggered = False
+    t1_tag, t1_price = None, None
+
+    for t in range(1, max_tage + 1):
+        idx = i + t
+        if idx >= len(close):
+            break
+        aktueller_kurs = float(close.iloc[idx])
+
+        if not t1_triggered:
+            ema50_aktuell = float(ema50_serie.iloc[idx])
+            if aktueller_kurs >= ema50_aktuell:
+                t1_triggered = True
+                t1_tag = t
+                t1_price = aktueller_kurs
+            continue
+
+        t1_profit = t1_price - buy_price
+        stop_loss_limit = buy_price + (t1_profit / 2.0) if t1_profit > 0 else buy_price
+        hoch_252 = float(high_252_serie.iloc[idx])
+        t2_ziel = hoch_252 * 0.99
+
+        if aktueller_kurs >= t2_ziel:
+            gesamt_rendite_pct = (
+                ((t1_price - buy_price) * 0.5 + (aktueller_kurs - buy_price) * 0.5) / buy_price
+            ) * 100
+            return {
+                "t1_tag": t1_tag, "t1_price": round(t1_price, 4),
+                "exit_typ": "T2_erreicht", "exit_tag": t,
+                "exit_price": round(aktueller_kurs, 4),
+                "gesamt_rendite_pct": round(gesamt_rendite_pct, 2),
+                "haltedauer_tage": t,
+            }
+        if aktueller_kurs <= stop_loss_limit:
+            gesamt_rendite_pct = (
+                ((t1_price - buy_price) * 0.5 + (aktueller_kurs - buy_price) * 0.5) / buy_price
+            ) * 100
+            return {
+                "t1_tag": t1_tag, "t1_price": round(t1_price, 4),
+                "exit_typ": "StopLoss", "exit_tag": t,
+                "exit_price": round(aktueller_kurs, 4),
+                "gesamt_rendite_pct": round(gesamt_rendite_pct, 2),
+                "haltedauer_tage": t,
+            }
+
+    # Kein vollstaendiger Exit innerhalb max_tage -> offene Position markieren
+    letzter_idx = min(i + max_tage, len(close) - 1)
+    letzter_kurs = float(close.iloc[letzter_idx])
+    tage_bis_ende = letzter_idx - i
+
+    if t1_triggered:
+        gesamt_rendite_pct = (
+            ((t1_price - buy_price) * 0.5 + (letzter_kurs - buy_price) * 0.5) / buy_price
+        ) * 100
+        exit_typ = "offen_nach_T1"
+    else:
+        gesamt_rendite_pct = ((letzter_kurs - buy_price) / buy_price) * 100
+        exit_typ = "offen_kein_T1"
+
+    return {
+        "t1_tag": t1_tag,
+        "t1_price": round(t1_price, 4) if t1_price is not None else None,
+        "exit_typ": exit_typ, "exit_tag": None,
+        "exit_price": round(letzter_kurs, 4),
+        "gesamt_rendite_pct": round(gesamt_rendite_pct, 2),
+        "haltedauer_tage": tage_bis_ende,
+    }
+
+
+def analysiere_etf(isin, ticker, sektor, regime_serie):
+    """Laedt Kursdaten, berechnet die Score-/Forward-Return-Zeilen fuer
+    JEDEN Tag (fuer Korrelation/Buckets/Schwellen-Sweep) UND gibt
+    zusaetzlich die Rohserien zurueck (fuer die spaetere episodenbasierte
+    T1/T2-Exit-Simulation, ohne die Daten ein zweites Mal laden zu
+    muessen)."""
     df = lade_kursdaten(ticker)
     mindest_laenge = 200 + max(VORSCHAU_TAGE) + 1
     if df is None or len(df) < mindest_laenge:
         laenge = 0 if df is None else len(df)
         print(f"    -> uebersprungen (nur {laenge} Handelstage Historie, "
               f"mindestens {mindest_laenge} noetig)")
-        return []
+        return [], None
 
     close = df["Close"].dropna()
     low = df["Low"].dropna() if "Low" in df else close
     high = df["High"].dropna() if "High" in df else close
 
     indikatoren = berechne_indikator_serien(close, high, low)
+    high_252 = high.rolling(window=252, min_periods=1).max()
 
     ergebnisse = []
     start_i = 199  # erster Index mit vollstaendigem GD200 (0-indexiert)
@@ -211,7 +329,11 @@ def backtest_einzelnes_etf(isin, ticker, sektor, regime_serie):
 
         ergebnisse.append(zeile)
 
-    return ergebnisse
+    serien = {
+        "close": close, "high": high, "low": low,
+        "ema50": indikatoren["ema50"], "high_252": high_252,
+    }
+    return ergebnisse, serien
 
 
 def episoden_zaehlen(df, score_spalte="dip_score", schwelle=KAUFSIGNAL_SCHWELLE):
@@ -224,6 +346,72 @@ def episoden_zaehlen(df, score_spalte="dip_score", schwelle=KAUFSIGNAL_SCHWELLE)
     vorheriger_tag = df.groupby("isin")["ueber_schwelle"].shift(1, fill_value=False)
     df["episode_start"] = df["ueber_schwelle"] & (~vorheriger_tag)
     return df[df["episode_start"]].copy()
+
+
+def schwellen_sweep(df, schwellen=SCHWELLEN_SWEEP_BEREICH):
+    """FRAGE 1: Welche Dip-Score-Schwelle ist optimal? Wertet fuer jede
+    Kandidaten-Schwelle Trefferquote, Ø-Gewinn/-Verlust und den
+    Erwartungswert (= Ø-Return ueber alle Episoden dieser Schwelle) aus."""
+    zeilen = []
+    for schwelle in schwellen:
+        episoden = episoden_zaehlen(df, schwelle=schwelle)
+        valide = episoden.dropna(subset=[f"return_{HAUPT_VORSCHAU}t"])
+        if len(valide) == 0:
+            zeilen.append({
+                "schwelle": schwelle, "anzahl_episoden": 0,
+                "trefferquote_pct": None, "avg_gewinn_pct": None,
+                "avg_verlust_pct": None, "erwartungswert_pct": None,
+                "ziel_erreicht_pct": None,
+            })
+            continue
+
+        rendite_spalte = valide[f"return_{HAUPT_VORSCHAU}t"]
+        gewinner = rendite_spalte[rendite_spalte > 0]
+        verlierer = rendite_spalte[rendite_spalte <= 0]
+        trefferquote = len(gewinner) / len(valide) * 100
+        avg_gewinn = gewinner.mean() if len(gewinner) > 0 else 0.0
+        avg_verlust = verlierer.mean() if len(verlierer) > 0 else 0.0
+        erwartungswert = rendite_spalte.mean()
+        ziel_rate = valide["ziel_erreicht_21t"].mean() * 100
+
+        zeilen.append({
+            "schwelle": schwelle,
+            "anzahl_episoden": len(valide),
+            "trefferquote_pct": round(trefferquote, 1),
+            "avg_gewinn_pct": round(avg_gewinn, 2),
+            "avg_verlust_pct": round(avg_verlust, 2),
+            "erwartungswert_pct": round(erwartungswert, 2),
+            "ziel_erreicht_pct": round(ziel_rate, 1),
+        })
+    return pd.DataFrame(zeilen)
+
+
+def exit_analyse(df, serien_cache, schwelle=KAUFSIGNAL_SCHWELLE):
+    """FRAGE 2: Haltedauer vs. Verkaufskurs. Fuer jede Episode bei der
+    aktuellen Kaufsignal-Schwelle wird sowohl die Tag-fuer-Tag-Rendite-
+    kurve als auch eure tatsaechliche T1/T2-Regel simuliert."""
+    episoden = episoden_zaehlen(df, schwelle=schwelle)
+    zeilen = []
+    for _, ep in episoden.iterrows():
+        serien = serien_cache.get(ep["ticker"])
+        if serien is None:
+            continue
+        try:
+            i = serien["close"].index.get_loc(pd.Timestamp(ep["datum"]))
+        except KeyError:
+            continue
+        if isinstance(i, slice) or hasattr(i, "__len__"):
+            continue  # doppelte Zeitstempel -> ueberspringen, sollte nicht vorkommen
+
+        kurve = rendite_kurve(serien["close"], i)
+        t1t2 = simuliere_t1_t2_regel(serien["close"], serien["ema50"], serien["high_252"], i)
+
+        zeilen.append({
+            "sektor": ep["sektor"], "isin": ep["isin"], "ticker": ep["ticker"],
+            "datum": ep["datum"], "dip_score": ep["dip_score"],
+            **kurve, **t1t2,
+        })
+    return pd.DataFrame(zeilen)
 
 
 def zusammenfassung(df, label=""):
@@ -240,40 +428,33 @@ def zusammenfassung(df, label=""):
         print("Zu wenig Daten fuer Korrelation.")
 
     print(f"\nDip Score gebucketed (Ø {HAUPT_VORSCHAU}-Tage-Return):")
-    bins = [0, 20, 40, 60, KAUFSIGNAL_SCHWELLE, 100]
-    df["score_bucket"] = pd.cut(df["dip_score"], bins=sorted(set(bins)), include_lowest=True)
+    bins = sorted(set([0, 20, 40, 60, KAUFSIGNAL_SCHWELLE, 100]))
+    df["score_bucket"] = pd.cut(df["dip_score"], bins=bins, include_lowest=True)
     bucket_stats = df.groupby("score_bucket", observed=True)[f"return_{HAUPT_VORSCHAU}t"].agg(
         ["mean", "count"]
     )
     print(bucket_stats)
 
-    episoden = episoden_zaehlen(df)
-    print(f"\nEpisoden mit Score >= {KAUFSIGNAL_SCHWELLE} (Kaufsignal-Schwelle): {len(episoden)}")
-    if len(episoden) > 0:
-        valide = episoden.dropna(subset=[f"return_{HAUPT_VORSCHAU}t"])
-        if len(valide) > 0:
-            win_rate = (valide[f"return_{HAUPT_VORSCHAU}t"] > 0).mean() * 100
-            ziel_rate = valide["ziel_erreicht_21t"].mean() * 100
-            avg_return = valide[f"return_{HAUPT_VORSCHAU}t"].mean()
-            avg_dd = valide["max_drawdown_21t"].mean()
-            print(f"  Trefferquote (Return > 0 nach {HAUPT_VORSCHAU}T): {win_rate:.1f}%")
-            print(f"  Quote {GEWINN_ZIEL_PCT:.0f}%-Ziel erreicht: {ziel_rate:.1f}%")
-            print(f"  Ø Return nach {HAUPT_VORSCHAU}T: {avg_return:+.2f}%")
-            print(f"  Ø max. Drawdown im Fenster: {avg_dd:+.2f}%")
-        else:
-            print("  Zu wenige Episoden mit vollstaendigem Vorschau-Fenster fuer Statistik.")
-    print("\n  Hinweis: Bei wenigen Episoden (<~20) sind diese Zahlen eine")
-    print("  Tendenz, kein statistischer Beweis - siehe unsere Absprache")
-    print("  zur begrenzten Historie eures ETF-Universums.")
-
-    print(f"\nKorrelation der einzelnen Score-Komponenten mit dem {HAUPT_VORSCHAU}-Tage-Return:")
+    print("\nKorrelation der einzelnen Score-Komponenten mit dem Forward-Return:")
     for komponente in ["rsi_score", "trend_score", "gd200_score", "ema50_score", "turnaround_score"]:
         k_df = df[[komponente, f"return_{HAUPT_VORSCHAU}t"]].dropna()
         if len(k_df) > 1:
             k = k_df.corr().iloc[0, 1]
             print(f"  {komponente}: {k:.3f}")
 
-    return episoden
+    print(f"\n{'-' * 60}")
+    print(f"FRAGE 1: Welche Dip-Score-Schwelle ist optimal?")
+    print(f"{'-' * 60}")
+    sweep = schwellen_sweep(df)
+    print(sweep.to_string(index=False))
+    print("\n  Hinweis: 'erwartungswert_pct' ist der Ø-Return ueber ALLE Episoden")
+    print("  dieser Schwelle (Gewinne UND Verluste eingerechnet) - aussagekraeftiger")
+    print("  als die Trefferquote allein. Sucht das Plateau: ab welcher Schwelle")
+    print("  verbessert sich der Erwartungswert kaum noch, waehrend die Anzahl")
+    print("  Episoden (= Handelsfrequenz) weiter sinkt?")
+    print("  Bei wenigen Episoden pro Schwelle (<~20) sind das Tendenzen, kein Beweis.")
+
+    return sweep
 
 
 def main():
@@ -287,14 +468,17 @@ def main():
         sys.exit(1)
 
     alle_ergebnisse = []
+    serien_cache = {}
     for item in etfs:
         ticker = item.get("ticker")
         if not ticker:
             print(f"  Uebersprungen (kein Ticker in {ISIN_DATEI}): {item['isin']}")
             continue
         print(f"  Backteste {ticker} ({item['isin']})...")
-        ergebnisse = backtest_einzelnes_etf(item["isin"], ticker, item["sektor"], regime_serie)
+        ergebnisse, serien = analysiere_etf(item["isin"], ticker, item["sektor"], regime_serie)
         alle_ergebnisse.extend(ergebnisse)
+        if serien is not None:
+            serien_cache[ticker] = serien
         time.sleep(API_PAUSE_SEKUNDEN)
 
     if not alle_ergebnisse:
@@ -307,11 +491,51 @@ def main():
 
     zusammenfassung(df, label="- Euer ETF-Universum")
 
+    print(f"\n{'-' * 60}")
+    print(f"FRAGE 2: Haltedauer vs. Verkaufskurs (Episoden bei Schwelle {KAUFSIGNAL_SCHWELLE:.0f})")
+    print(f"{'-' * 60}")
+    exit_df = exit_analyse(df, serien_cache)
+    if exit_df.empty:
+        print("Keine Episoden bei der aktuellen Schwelle gefunden - Exit-Analyse übersprungen.")
+    else:
+        exit_df.to_csv("backtest_exit_analyse.csv", index=False)
+        print(f"{len(exit_df)} Episoden analysiert, gespeichert in backtest_exit_analyse.csv\n")
+
+        def _stat(spalte):
+            s = exit_df[spalte].dropna()
+            if len(s) == 0:
+                return "n/a"
+            return f"Ø {s.mean():+.2f}% (n={len(s)})"
+
+        print("Feste Haltedauer (unabhaengig von Trendindikatoren):")
+        print(f"  Nach 7 Tagen verkaufen:  {_stat('rendite_tag7')}")
+        print(f"  Nach 21 Tagen verkaufen: {_stat('rendite_tag21')}")
+
+        print("\nEure aktuelle T1/T2-Regel (simuliert: EMA50 / 52W-Hoch / dynamischer Stop):")
+        print(f"  Ø Gesamtrendite: {_stat('gesamt_rendite_pct')}")
+        haltedauer = exit_df["haltedauer_tage"].dropna()
+        if len(haltedauer) > 0:
+            print(f"  Ø Haltedauer bis Exit: {haltedauer.mean():.1f} Tage")
+        print("  Exit-Typ-Verteilung:")
+        for typ, anzahl in exit_df["exit_typ"].value_counts().items():
+            print(f"    {typ}: {anzahl} ({anzahl / len(exit_df) * 100:.1f}%)")
+
+        print("\nTheoretisches Optimum (im Nachhinein bester Tag je Episode - nicht handelbar,")
+        print("dient nur als Obergrenze):")
+        print(f"  Bester Tag nach Gesamtrendite: {_stat('bester_rendite_gesamt')}")
+        bt_tag = exit_df["bester_tag_gesamt"].dropna()
+        if len(bt_tag) > 0:
+            print(f"    Ø an Tag {bt_tag.mean():.1f}")
+        print(f"  Bester Tag nach Rendite/Tag (Kapital-Effizienz): {_stat('beste_rendite_pro_tag')}")
+        bt_eff = exit_df["bester_tag_effizienz"].dropna()
+        if len(bt_eff) > 0:
+            print(f"    Ø an Tag {bt_eff.mean():.1f}")
+
     print("\n\n--- ZUSATZVALIDIERUNG: etablierte, langjaehrige Sektor-ETFs (USD) ---")
     zusatz_ergebnisse = []
     for ticker in ZUSATZVALIDIERUNG_TICKER:
         print(f"  Backteste {ticker}...")
-        ergebnisse = backtest_einzelnes_etf(ticker, ticker, "Zusatzvalidierung", regime_serie)
+        ergebnisse, _ = analysiere_etf(ticker, ticker, "Zusatzvalidierung", regime_serie)
         zusatz_ergebnisse.extend(ergebnisse)
         time.sleep(API_PAUSE_SEKUNDEN)
 
