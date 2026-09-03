@@ -12,7 +12,9 @@ import yfinance as yf
 from dip_score import (
     berechne_indikator_serien,
     score_am_punkt,
+    signal_stufe,
     KAUFSIGNAL_SCHWELLE,
+    SOFT_KAUFSIGNAL_SCHWELLE,
     RSI_WATCHLIST_SCHWELLE,
     REGIME_MALUS_FAKTOR,
     MARKT_BENCHMARK_TICKER,
@@ -313,12 +315,20 @@ st.title("📈 ETF Dip-Scanner & Portfolio-Manager")
 
 with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     st.markdown(f"""
-    ### 🎯 Ein Kaufsignal = Dip Score ≥ {KAUFSIGNAL_SCHWELLE:.0f}
+    ### 🎯 Zwei Signalstufen statt Ja/Nein
     Es gibt keinen separaten Ja/Nein-Filter - alle Kriterien (RSI, Trend,
     Kursrückgang, Marktumfeld) fließen in **einen einzigen Score** von
-    maximal ca. 100 Punkten ein. Je höher der Score, desto überzeugender
-    das Signal. Die Gewichtung basiert auf einem Backtest über ~277.000
-    ETF-Tage, nicht nur auf Annahmen.
+    maximal ca. 100 Punkten ein. Der Backtest über ~277.000 ETF-Tage zeigt
+    zwei sinnvolle Schwellen mit unterschiedlicher Renditeerwartung:
+
+    | Stufe | Score | Backtest-Trefferquote (40 Handelstage) |
+    |---|---|---|
+    | 🟡 Softes Signal | {SOFT_KAUFSIGNAL_SCHWELLE:.0f}-{KAUFSIGNAL_SCHWELLE - 1:.0f} | ~80% erreichen +5% |
+    | 🔥 Kaufsignal | ≥ {KAUFSIGNAL_SCHWELLE:.0f} | ~63% erreichen +10% |
+
+    Bei der Order lohnt es sich, die Stufe zu notieren (z. B. in
+    `portfolio.py`) - ein softes Signal rechtfertigt eher ein niedrigeres
+    Ziel (~5%) als ein volles Kaufsignal (~10%).
 
     | Komponente | Max. Punkte | Was gemessen wird |
     |---|---|---|
@@ -502,7 +512,9 @@ if "watchlist_signale" not in st.session_state:
             gd200_10d_abstand = ((gd200_10d - c) / c) * 100
             rsi35_abstand = ((rsi35 - c) / c) * 100
 
-            ist_kaufsignal = dip_score >= KAUFSIGNAL_SCHWELLE
+            stufe = signal_stufe(dip_score)
+            ist_kaufsignal = stufe == "voll"
+            ist_soft_signal = stufe == "soft"
             ist_in_portfolio = item["isin"] in portfolio_isins
             # Hauptkriterium: RSI < 40. Portfolio-Positionen erscheinen immer,
             # unabhängig von ihren aktuellen Werten.
@@ -531,6 +543,7 @@ if "watchlist_signale" not in st.session_state:
                 "Marktregime_OK": regime_ok,
                 "Zeitstempel": data["yahoo_zeit"],
                 "Ist_Kaufsignal": ist_kaufsignal,
+                "Ist_Soft_Signal": ist_soft_signal,
                 "Ist_Portfolio": ist_in_portfolio,
             }
 
@@ -577,22 +590,35 @@ with tab1:
         )
 
     anzahl_kaufsignale = sum(1 for e in watch if e["Ist_Kaufsignal"])
+    anzahl_soft_signale = sum(1 for e in watch if e["Ist_Soft_Signal"])
 
     if watch:
         if anzahl_kaufsignale > 0:
             st.success(
                 f"**{anzahl_kaufsignale} Kaufsignal(e) gefunden!** "
-                f"(Dip Score ≥ {KAUFSIGNAL_SCHWELLE:.0f})"
+                f"(Dip Score ≥ {KAUFSIGNAL_SCHWELLE:.0f}, Backtest-Ziel ~10%+)"
+                + (
+                    f" · zusätzlich {anzahl_soft_signale} softe(s) Signal(e) "
+                    f"({SOFT_KAUFSIGNAL_SCHWELLE:.0f}-{KAUFSIGNAL_SCHWELLE - 1:.0f}, Ziel ~5%+)"
+                    if anzahl_soft_signale > 0
+                    else ""
+                )
+            )
+        elif anzahl_soft_signale > 0:
+            st.info(
+                f"Kein volles Kaufsignal, aber **{anzahl_soft_signale} softe(s) Signal(e)** "
+                f"({SOFT_KAUFSIGNAL_SCHWELLE:.0f}-{KAUFSIGNAL_SCHWELLE - 1:.0f} Punkte, Backtest-Ziel ~5%+)."
             )
         else:
             st.info(
-                f"Aktuell kein ETF über der Kaufsignal-Schwelle von "
-                f"{KAUFSIGNAL_SCHWELLE:.0f} Punkten."
+                f"Aktuell kein ETF über der soften Signal-Schwelle von "
+                f"{SOFT_KAUFSIGNAL_SCHWELLE:.0f} Punkten."
             )
 
         st.caption(
             "💡 **Farblegende:** 🥇/🥈/🥉 Top Dip-Scores | 🔥 Kaufsignal "
-            "(Score ≥ Schwelle) | 🟪 Lila: Im Portfolio | "
+            "(Score ≥ Schwelle, Ziel ~10%+) | 🟡 Softes Signal (Ziel ~5%+) | "
+            "🟪 Lila: Im Portfolio | "
             "RSI: 🟩 ≤31.9, ⬜ 32-35, 🟥 >35 | "
             "Live: 🟩 RSI-Tendenz ↑ (Erholung), ⬜ unverändert, 🟥 RSI-Tendenz ↓ (noch fallend) | "
             "GD200 & GD200 v10T: 🟩 klar drüber/steigend, ⬜ knapp (≤1%), 🟥 drunter/fallend"
@@ -642,7 +668,12 @@ with tab1:
         def format_ticker_rank(row):
             t = row["Ticker"]
             rank = row["Dip_Rank"]
-            praefix = "🔥 " if row["Ist_Kaufsignal"] else ""
+            if row["Ist_Kaufsignal"]:
+                praefix = "🔥 "
+            elif row["Ist_Soft_Signal"]:
+                praefix = "🟡 "
+            else:
+                praefix = ""
             if rank == 1:
                 return f"{praefix}🥇 {t}"
             elif rank == 2:
@@ -708,9 +739,18 @@ with tab1:
             axis=1,
         )
         display_df["Dip Score"] = df_watch["Dip Score"].map(lambda x: f"{x:.1f}")
-        display_df["Signal"] = df_watch["Ist_Kaufsignal"].map(
-            lambda x: "🔥 KAUFEN" if x else "👀 Beobachten"
-        )
+
+        def signal_label(row):
+            if row["Ist_Kaufsignal"]:
+                return "🔥 KAUFEN (Ziel ~10%+)"
+            elif row["Ist_Soft_Signal"]:
+                return "🟡 Softes Signal (Ziel ~5%+)"
+            else:
+                return "👀 Beobachten"
+
+        display_df["Signal"] = [
+            signal_label(df_watch.iloc[i]) for i in range(len(df_watch))
+        ]
         display_df["Zeitstempel"] = df_watch["Zeitstempel"]
 
         def style_watchlist_cells(df):
@@ -725,6 +765,11 @@ with tab1:
                         "background-color: #d4edda; color: #155724;"
                         " font-weight: bold;"
                     )
+                elif row_raw.get("Ist_Soft_Signal", False):
+                    color = (
+                        "background-color: #fff3cd; color: #856404;"
+                        " font-weight: bold;"
+                    )
                 else:
                     color = ""
 
@@ -733,7 +778,12 @@ with tab1:
                         styles.loc[idx, col] = color
 
                 dip_rank = row_raw.get("Dip_Rank", 999)
-                if dip_rank in (1, 2, 3) and not row_raw["Ist_Kaufsignal"] and not row_raw.get("Ist_Portfolio", False):
+                if (
+                    dip_rank in (1, 2, 3)
+                    and not row_raw["Ist_Kaufsignal"]
+                    and not row_raw.get("Ist_Soft_Signal", False)
+                    and not row_raw.get("Ist_Portfolio", False)
+                ):
                     medaillen = {1: "#fef9e7", 2: "#f2f3f4", 3: "#fbeee6"}
                     styles.loc[idx, "Ticker"] = (
                         f"background-color: {medaillen[dip_rank]}; font-weight: bold;"
