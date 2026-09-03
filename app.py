@@ -164,6 +164,20 @@ def markt_regime_ok(benchmark_ticker=None):
         return True  # Fail-safe: bei Datenproblem keinen Malus anwenden
 
 
+@st.cache_data(ttl=86400 * 30)  # 30 Tage - ETF-Namen ändern sich praktisch nie
+def hole_etf_name(ticker):
+    """Lädt den vollen ETF-Namen über yfinance (schwerere .info-Abfrage,
+    deshalb sehr lang gecacht - nur beim allerersten Scan pro Ticker
+    wirklich fällig). Fällt bei Fehlern/fehlenden Daten auf den Ticker
+    selbst zurück, damit die Spalte nie leer/kaputt aussieht."""
+    try:
+        info = yf.Ticker(ticker).info
+        name = info.get("longName") or info.get("shortName")
+        return name if name else ticker
+    except Exception:
+        return ticker
+
+
 @st.cache_data(ttl=300)
 def berechne_indikatoren(isin, ticker=None):
     if ticker:
@@ -304,6 +318,7 @@ def berechne_indikatoren(isin, ticker=None):
         "gd200_score": score_ergebnis["gd200_score"],
         "ema50_score": score_ergebnis["ema50_score"],
         "drawdown_score": score_ergebnis["drawdown_score"],
+        "gd200_bruch_malus_faktor": score_ergebnis["gd200_bruch_malus_faktor"],
         "drawdown_20t_pct": score_ergebnis["drawdown_20t_pct"],
         "regime_ok": regime_ok,
         "yahoo_zeit": yahoo_zeit,
@@ -509,20 +524,23 @@ if "watchlist_signale" not in st.session_state:
             rsi = data["rsi"]
             rsi35 = data["rsi35_preis"]
             gd200 = data["gd200"]
-            gd200_10d = data["gd200_vor_10d"]
             ema50 = data["ema50"]
             gd200_steigt = data["gd200_steigt"]
-            perf_1w = data["perf_1w"]
             dip_score = data["dip_score"]
             drawdown_score = data["drawdown_score"]
             drawdown_20t_pct = data["drawdown_20t_pct"]
+            gd200_bruch_malus = data["gd200_bruch_malus_faktor"]
             regime_ok = data["regime_ok"]
             live_kurs = data["live_close"]
             live_rsi = data["live_rsi"]
+            rsi_score = data["rsi_score"]
+            trend_score = data["trend_score"]
+            gd200_score = data["gd200_score"]
+            ema50_score = data["ema50_score"]
 
             gd200_abstand = ((gd200 - c) / c) * 100
-            gd200_10d_abstand = ((gd200_10d - c) / c) * 100
             rsi35_abstand = ((rsi35 - c) / c) * 100
+            etf_name = hole_etf_name(ticker)
 
             stufe = signal_stufe(dip_score)
             ist_kaufsignal = stufe == "voll"
@@ -533,25 +551,28 @@ if "watchlist_signale" not in st.session_state:
             ist_watchlist_kandidat = (rsi < RSI_WATCHLIST_SCHWELLE) or ist_in_portfolio
 
             entry = {
+                "Name": etf_name,
                 "Sektor": item["sektor"],
                 "ISIN": item["isin"],
                 "Ticker": ticker,
                 "Kurs": c,
                 "RSI": round(rsi, 1),
+                "RSI_Score": rsi_score,
                 "RSI 35 Preis": rsi35,
                 "RSI35_Abstand": rsi35_abstand,
                 "Live_Kurs": live_kurs,
                 "Live_RSI": round(live_rsi, 1),
+                "Trend_Score": trend_score,
                 "GD200": gd200,
                 "GD200_Abstand": gd200_abstand,
-                "GD200_10d": gd200_10d,
-                "GD200_10d_Abstand": gd200_10d_abstand,
+                "GD200_Score": gd200_score,
                 "GD200_steigt": gd200_steigt,
                 "EMA50": ema50,
-                "1W Perf.": perf_1w,
+                "EMA50_Score": ema50_score,
                 "Dip Score": dip_score,
                 "Drawdown Score": drawdown_score,
                 "Drawdown_20t_Pct": drawdown_20t_pct,
+                "GD200_Bruch_Malus": gd200_bruch_malus,
                 "Marktregime_OK": regime_ok,
                 "Zeitstempel": data["yahoo_zeit"],
                 "Ist_Kaufsignal": ist_kaufsignal,
@@ -633,7 +654,7 @@ with tab1:
             "🟪 Lila: Im Portfolio | "
             "RSI: 🟩 ≤31.9, ⬜ 32-35, 🟥 >35 | "
             "Live: 🟩 RSI-Tendenz ↑ (Erholung), ⬜ unverändert, 🟥 RSI-Tendenz ↓ (noch fallend) | "
-            "GD200 & GD200 v10T: 🟩 klar drüber/steigend, ⬜ knapp (≤1%), 🟥 drunter/fallend"
+            "GD200: 🟩 klar drüber, ⬜ knapp (≤1%), 🟥 drunter"
         )
 
         col_sort1, col_sort2 = st.columns([2, 2])
@@ -645,7 +666,6 @@ with tab1:
                     "🔥 RSI (Niedrigster zuerst)",
                     "🎯 Abstand zu RSI 35 Zielkurs",
                     "📊 Nähe zu GD200-Unterstützung",
-                    "📉 Stärkster 1W-Rücksetzer",
                 ],
                 index=1,
             )
@@ -672,13 +692,11 @@ with tab1:
             )
         elif sort_kriterium == "📊 Nähe zu GD200-Unterstützung":
             df_watch = df_watch.sort_values(by="GD200_Abstand", ascending=True)
-        elif sort_kriterium == "📉 Stärkster 1W-Rücksetzer":
-            df_watch = df_watch.sort_values(by="1W Perf.", ascending=True)
 
         df_watch = df_watch.reset_index(drop=True)
 
-        def format_ticker_rank(row):
-            t = row["Ticker"]
+        def format_name_rank(row):
+            name = row["Name"]
             rank = row["Dip_Rank"]
             if row["Ist_Kaufsignal"]:
                 praefix = "🔥 "
@@ -687,23 +705,26 @@ with tab1:
             else:
                 praefix = ""
             if rank == 1:
-                return f"{praefix}🥇 {t}"
+                return f"{praefix}🥇 {name}"
             elif rank == 2:
-                return f"{praefix}🥈 {t}"
+                return f"{praefix}🥈 {name}"
             elif rank == 3:
-                return f"{praefix}🥉 {t}"
+                return f"{praefix}🥉 {name}"
             else:
-                return f"{praefix}{t}"
+                return f"{praefix}{name}"
 
         display_df = pd.DataFrame()
-        display_df["Sektor"] = df_watch["Sektor"]
-        display_df["ISIN"] = df_watch["ISIN"]
-        display_df["Ticker"] = [
-            format_ticker_rank(df_watch.iloc[i]) for i in range(len(df_watch))
+        display_df["Name"] = [
+            format_name_rank(df_watch.iloc[i]) for i in range(len(df_watch))
         ]
+        display_df["ISIN"] = df_watch["ISIN"]
+        display_df["Sektor"] = df_watch["Sektor"]
+        display_df["Ticker"] = df_watch["Ticker"]
 
         display_df["Kurs"] = df_watch["Kurs"].map(lambda x: f"{x:.2f} €")
-        display_df["RSI"] = df_watch["RSI"].map(lambda x: f"{x:.1f}")
+        display_df["RSI"] = df_watch.apply(
+            lambda r: f"{r['RSI']:.1f} ({r['RSI_Score']:.0f}/20)", axis=1
+        )
 
         display_df["Live"] = df_watch.apply(
             lambda r: (
@@ -719,18 +740,20 @@ with tab1:
             axis=1,
         )
 
-        display_df["GD200"] = df_watch.apply(
+        display_df["Trend"] = df_watch.apply(
             lambda r: (
-                f"{r['GD200']:.2f} €"
-                f" ({((r['GD200'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
+                ("✅" if r["EMA50"] > r["GD200"] else "❌")
+                + ("✅" if r["GD200_steigt"] else "❌")
+                + f" {r['Trend_Score']:.0f}/15"
             ),
             axis=1,
         )
 
-        display_df["GD200 v10T"] = df_watch.apply(
+        display_df["GD200"] = df_watch.apply(
             lambda r: (
-                f"{r['GD200_10d']:.2f} €"
-                f" ({((r['GD200_10d'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
+                f"{r['GD200']:.2f} €"
+                f" ({((r['GD200'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
+                f" · {r['GD200_Score']:.0f}/15"
             ),
             axis=1,
         )
@@ -739,17 +762,24 @@ with tab1:
             lambda r: (
                 f"{r['EMA50']:.2f} €"
                 f" ({((r['EMA50'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
+                f" · {r['EMA50_Score']:.0f}/15"
             ),
             axis=1,
         )
 
-        display_df["1W Perf."] = df_watch["1W Perf."].map(
-            lambda x: f"{x:+.2f}%"
-        )
         display_df["Rückgang"] = df_watch.apply(
             lambda r: f"{r['Drawdown_20t_Pct']:.1f}% ({r['Drawdown Score']:.0f}/35)",
             axis=1,
         )
+
+        display_df["Regime"] = df_watch["Marktregime_OK"].map(
+            lambda ok: "🟢 ×1.00" if ok else f"🔴 ×{REGIME_MALUS_FAKTOR:.2f}"
+        )
+
+        display_df["Bruch-Malus"] = df_watch["GD200_Bruch_Malus"].map(
+            lambda x: f"×{x:.2f}"
+        )
+
         display_df["Dip Score"] = df_watch["Dip Score"].map(lambda x: f"{x:.1f}")
 
         def signal_label(row):
@@ -797,7 +827,7 @@ with tab1:
                     and not row_raw.get("Ist_Portfolio", False)
                 ):
                     medaillen = {1: "#fef9e7", 2: "#f2f3f4", 3: "#fbeee6"}
-                    styles.loc[idx, "Ticker"] = (
+                    styles.loc[idx, "Name"] = (
                         f"background-color: {medaillen[dip_rank]}; font-weight: bold;"
                     )
 
@@ -805,7 +835,6 @@ with tab1:
                 # drüber (<=1%), rot = drunter)
                 kurs_val = row_raw["Kurs"]
                 gd200_val = row_raw["GD200"]
-                gd200_10d_val = row_raw["GD200_10d"]
                 rsi_val = row_raw["RSI"]
 
                 # RSI-Zelle: <=31.9 grün, 32-35 grau, Rest (>35) rot
@@ -835,19 +864,6 @@ with tab1:
                     styles.loc[idx, "GD200"] = "background-color: #e2e3e5; color: #383d41;"
                 else:
                     styles.loc[idx, "GD200"] = "background-color: #d4edda; color: #155724;"
-
-                # GD200 v10T-Zelle: GD200 heute vs. GD200 vor 10 Tagen (Trendrichtung)
-                gd200_10d_diff_pct = (
-                    ((gd200_val - gd200_10d_val) / gd200_10d_val) * 100
-                    if gd200_10d_val
-                    else 0.0
-                )
-                if gd200_10d_diff_pct <= 0:
-                    styles.loc[idx, "GD200 v10T"] = "background-color: #f8d7da; color: #721c24;"
-                elif gd200_10d_diff_pct <= 1:
-                    styles.loc[idx, "GD200 v10T"] = "background-color: #e2e3e5; color: #383d41;"
-                else:
-                    styles.loc[idx, "GD200 v10T"] = "background-color: #d4edda; color: #155724;"
 
                 styles.loc[idx, "Dip Score"] = (
                     "font-weight: bold; text-align: center;"
@@ -922,12 +938,16 @@ with tab2:
                 current_price = data["close"]
                 buy_price = float(pos["buy_price"])
                 shares = float(pos.get("shares", 0))
-                ist_alt_position = pos.get("partially_sold", False)
+
+                # Manuelle Zuordnung ist bindend und überschreibt auch die
+                # Alt-System-Einstufung (partially_sold), nicht nur die Stufe.
+                manuelle_stufe = MANUELLE_SIGNAL_STUFEN.get(pos["isin"])
+                ist_alt_position = pos.get("partially_sold", False) and manuelle_stufe is None
 
                 # Signalstufe: manuelle Zuordnung oben ist für die dort
                 # gelisteten ISINs bindend > sonst portfolio.py ('signal_stufe')
                 # > gespeicherter Score ('dip_score_bei_kauf') > unbekannt.
-                stufe = MANUELLE_SIGNAL_STUFEN.get(pos["isin"])
+                stufe = manuelle_stufe
                 if stufe not in ("soft", "voll"):
                     stufe = pos.get("signal_stufe")
                 if stufe not in ("soft", "voll"):
