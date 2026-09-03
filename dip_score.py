@@ -30,7 +30,8 @@ import pandas as pd
 # KONFIGURATION (identisch zu app.py - dort werden dieselben Werte
 # verwendet; falls in app.py angepasst, hier synchron halten)
 # ==========================================
-KAUFSIGNAL_SCHWELLE = 66.0
+KAUFSIGNAL_SCHWELLE = 70.0        # "volles" Kaufsignal - Backtest-Ziel ~10%+
+SOFT_KAUFSIGNAL_SCHWELLE = 60.0   # "softes" Kaufsignal - Backtest-Ziel ~5%+
 RSI_WATCHLIST_SCHWELLE = 40.0
 REGIME_MALUS_FAKTOR = 0.8
 MARKT_BENCHMARK_TICKER = "URTH"  # Breiter Referenzindex (iShares MSCI World). Alternative: "^STOXX" (Europa)
@@ -167,3 +168,23 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
         "gd200_bruch_malus_faktor": round(gd200_bruch_malus_faktor, 3),
         "dip_score": dip_score,
     }
+
+
+def signal_stufe(
+    dip_score: float,
+    soft_schwelle: float = SOFT_KAUFSIGNAL_SCHWELLE,
+    voll_schwelle: float = KAUFSIGNAL_SCHWELLE,
+) -> str:
+    """Klassifiziert einen Dip Score in eine von drei Signalstufen, auf
+    Basis des Backtests (Schwellen-Sweep mit der aktuellen Formel):
+    - 'voll'  (Score >= 70): statistisches Ziel ~10%+, quote_10pct ~63%
+    - 'soft'  (Score 60-69): statistisches Ziel ~5%+, quote_5pct ~80%
+    - 'kein'  (Score < 60): kein Kaufsignal
+
+    Wird sowohl in app.py (Watchlist-Anzeige) als auch potenziell im
+    Backtest fuer stufenspezifische Auswertungen genutzt."""
+    if dip_score >= voll_schwelle:
+        return "voll"
+    elif dip_score >= soft_schwelle:
+        return "soft"
+    return "kein"
