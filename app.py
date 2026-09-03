@@ -9,6 +9,15 @@ import requests
 import streamlit as st
 import yfinance as yf
 
+from dip_score import (
+    berechne_indikator_serien,
+    score_am_punkt,
+    KAUFSIGNAL_SCHWELLE,
+    RSI_WATCHLIST_SCHWELLE,
+    REGIME_MALUS_FAKTOR,
+    MARKT_BENCHMARK_TICKER,
+)
+
 import importlib
 import portfolio
 importlib.reload(portfolio)  # Zwingt Python, portfolio.py bei jedem Rerun neu zu lesen
@@ -65,10 +74,6 @@ MANUAL_TICKERS = {}
 # ==========================================
 # SCANNER-KONFIGURATION (hier einfach anpassbar)
 # ==========================================
-KAUFSIGNAL_SCHWELLE = 66.0       # Dip Score, ab dem ein Kaufsignal markiert wird
-RSI_WATCHLIST_SCHWELLE = 40.0    # Hauptkriterium: nur ETFs mit RSI darunter erscheinen in der Watchlist
-MARKT_BENCHMARK_TICKER = "URTH"  # Breiter Referenzindex (iShares MSCI World). Alternative: "^STOXX" (Europa)
-REGIME_MALUS_FAKTOR = 0.8        # Dämpfung aller Scores, wenn der Referenzindex unter seinem GD200 liegt
 DATENSTAND_CUTOFF_STUNDE = 19    # Vor dieser Uhrzeit (Europe/Berlin) gilt der heutige Schlusskurs
                                   # noch als nicht final bestätigt -> letzter Vortag wird verwendet
 
@@ -241,43 +246,23 @@ def berechne_indikatoren(isin, ticker=None):
     except Exception:
         pass
 
-    # 52-Wochen-Hoch (ca. 252 Handelstage)
+    # 52-Wochen-Hoch (ca. 252 Handelstage) - separat, da nicht Teil des
+    # gemeinsamen Scores (wird fuer das T2-Exit-Ziel in Tab 2 benoetigt)
     high_52w = float(high.tail(252).max()) if len(high) >= 252 else float(high.max())
 
-    gd200 = close.rolling(window=200).mean()
-    ema50 = close.ewm(span=50, adjust=False).mean()
+    # --- GEMEINSAMES SCORE-MODUL (dip_score.py) ---
+    # Einzige Quelle der Wahrheit fuer die Score-Formel, identisch zu dem,
+    # was backtest.py verwendet.
+    indikatoren = berechne_indikator_serien(close, high, low)
+    regime_ok = markt_regime_ok()
+    score_ergebnis = score_am_punkt(indikatoren, -1, regime_ok=regime_ok)
 
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = -1 * delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
-    rsi = 100 - (100 / (1 + (avg_gain / avg_loss)))
+    c_today = score_ergebnis["close"]
+    rsi_today = float(indikatoren["rsi"].iloc[-1])
 
-    # --- ATR(14) für den volatilitätsnormalisierten Turnaround-Score ---
-    prev_close = close.shift(1)
-    true_range = pd.concat(
-        [
-            (high - low),
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    atr14 = true_range.rolling(window=14).mean()
-
-    ag_today = float(avg_gain.iloc[-1])
-    al_today = float(avg_loss.iloc[-1])
-    c_today = float(close.iloc[-1])
-    tages_tief = float(low.iloc[-1]) if not low.empty else c_today
-    rsi_today = float(rsi.iloc[-1])
-    atr14_heute = (
-        float(atr14.iloc[-1])
-        if not atr14.empty and not pd.isna(atr14.iloc[-1])
-        else 0.0
-    )
-    vortages_hoch = float(high.iloc[-2]) if len(high) >= 2 else c_today
-
+    # RSI-35-Zielpreis (reiner Info-/Sortier-Wert, kein Score-Bestandteil)
+    ag_today = float(indikatoren["avg_gain"].iloc[-1])
+    al_today = float(indikatoren["avg_loss"].iloc[-1])
     if rsi_today > 35.0:
         drop_needed = (169.0 * ag_today - 91.0 * al_today) / 7.0
         rsi35_preis = c_today - drop_needed
@@ -285,92 +270,17 @@ def berechne_indikatoren(isin, ticker=None):
         rise_needed = (91.0 * al_today - 169.0 * ag_today) / 13.0
         rsi35_preis = c_today + rise_needed
 
-    gd200_heute = float(gd200.iloc[-1])
-    ema50_heute = float(ema50.iloc[-1])
+    gd200_vor_10d_wert = indikatoren["gd200_vor_10d"].iloc[-1]
     gd200_vor_10d = (
-        float(gd200.iloc[-11]) if len(gd200) >= 11 else gd200_heute
+        float(gd200_vor_10d_wert)
+        if not pd.isna(gd200_vor_10d_wert)
+        else score_ergebnis["gd200"]
     )
-    gd200_steigt = gd200_heute > gd200_vor_10d
 
     perf_1w = 0.0
     if len(close) >= 6:
         close_1w = float(close.iloc[-6])
         perf_1w = ((c_today - close_1w) / close_1w) * 100
-
-    rsi_heute = rsi_today
-    rsi_gestern = float(rsi.iloc[-2]) if len(rsi) >= 2 else rsi_heute
-
-    # ==========================================
-    # NEUER DIP SCORE (max. ca. 100 Punkte)
-    # In klar begrenzte Teil-Scores aufgeteilt, damit ein hoher Gesamtwert
-    # automatisch bedeutet, dass ALLE Kriterien mitspielen - inkl. Turnaround.
-    # ==========================================
-
-    # 1) RSI-Überverkauft-Tiefe (max. 20 Punkte)
-    rsi_score = min(20.0, max(0.0, (45.0 - rsi_today)) * 1.5)
-
-    # 2) Trend intakt: EMA50 > GD200 UND GD200 steigt (max. 15 Punkte)
-    trend_score = (7.5 if ema50_heute > gd200_heute else 0.0) + (
-        7.5 if gd200_steigt else 0.0
-    )
-
-    # 3) Sicherheitspuffer über GD200 (max. 15 Punkte)
-    gd200_buffer_pct = (
-        ((c_today - gd200_heute) / gd200_heute) * 100 if gd200_heute else 0.0
-    )
-    gd200_score = min(15.0, max(0.0, gd200_buffer_pct) * 0.9)
-
-    # 4) Mean-Reversion-Potenzial bis zur EMA50 (max. 15 Punkte)
-    ema50_upside_pct = max(0.0, ((ema50_heute - c_today) / c_today) * 100)
-    ema50_score = min(15.0, ema50_upside_pct * 1.2)
-
-    # 5) Turnaround-Qualität (max. 35 Punkte - größte Einzelkomponente)
-    #    a) ATR-normalisierter Bounce vom Tagestief statt fixer Prozentschwelle
-    bounce_atr_ratio = (
-        (c_today - tages_tief) / atr14_heute if atr14_heute > 0 else 0.0
-    )
-    turnaround_bounce_score = min(15.0, max(0.0, bounce_atr_ratio) * 40.0)
-
-    #    b) RSI-Richtungswechsel (Tagesdelta)
-    turnaround_rsi_score = min(10.0, max(0.0, rsi_heute - rsi_gestern) * 3.0)
-
-    #    c) Bestätigungs-Bonus: Schlusskurs über/nahe Vortageshoch (graduell,
-    #       damit ein Tag-1-Reversal nicht automatisch 0 Punkte bekommt)
-    if c_today >= vortages_hoch:
-        turnaround_bestaetigung = 10.0
-    elif atr14_heute > 0:
-        naehe_faktor = max(0.0, 1.0 - (vortages_hoch - c_today) / atr14_heute)
-        turnaround_bestaetigung = round(min(6.0, naehe_faktor * 6.0), 1)
-    else:
-        turnaround_bestaetigung = 0.0
-
-    turnaround_score = min(
-        35.0,
-        turnaround_bounce_score + turnaround_rsi_score + turnaround_bestaetigung,
-    )
-
-    basis_score = rsi_score + trend_score + gd200_score + ema50_score  # max. 65
-    dip_score_roh = basis_score + turnaround_score  # max. 100
-
-    # 6) Marktregime-Filter: dämpft ALLE Scores, wenn der breite Markt selbst
-    #    unter seinem GD200 liegt (Schutz vor "alles fällt gleichzeitig")
-    regime_ok = markt_regime_ok()
-    regime_multiplier = 1.0 if regime_ok else REGIME_MALUS_FAKTOR
-
-    # 7) GD200-Bruch-Malus: dämpft den Score zusätzlich, wenn der Kurs schon
-    #    deutlich UNTER dem GD200 liegt - unabhängig davon, ob EMA50/GD200-
-    #    Richtung (Trend-Score) noch "grün" sind. Graduell statt hartem Cut:
-    #    0% Abstand = kein Abzug, ab 10% Abstand maximaler Abzug (Faktor 0.6).
-    gd200_bruch_pct = (
-        max(0.0, ((gd200_heute - c_today) / gd200_heute) * 100)
-        if gd200_heute
-        else 0.0
-    )
-    gd200_bruch_malus_faktor = max(0.6, 1.0 - (gd200_bruch_pct / 10.0) * 0.4)
-
-    dip_score = round(
-        dip_score_roh * regime_multiplier * gd200_bruch_malus_faktor, 1
-    )
 
     return {
         "close": c_today,
@@ -378,18 +288,18 @@ def berechne_indikatoren(isin, ticker=None):
         "rsi35_preis": float(rsi35_preis),
         "live_close": live_close if live_close is not None else c_today,
         "live_rsi": live_rsi if live_rsi is not None else rsi_today,
-        "gd200": gd200_heute,
+        "gd200": score_ergebnis["gd200"],
         "gd200_vor_10d": gd200_vor_10d,
-        "ema50": ema50_heute,
+        "ema50": score_ergebnis["ema50"],
         "high_52w": high_52w,
-        "gd200_steigt": gd200_steigt,
+        "gd200_steigt": score_ergebnis["gd200_steigt"],
         "perf_1w": perf_1w,
-        "dip_score": dip_score,
-        "rsi_score": round(rsi_score, 1),
-        "trend_score": round(trend_score, 1),
-        "gd200_score": round(gd200_score, 1),
-        "ema50_score": round(ema50_score, 1),
-        "turnaround_score": round(turnaround_score, 1),
+        "dip_score": score_ergebnis["dip_score"],
+        "rsi_score": score_ergebnis["rsi_score"],
+        "trend_score": score_ergebnis["trend_score"],
+        "gd200_score": score_ergebnis["gd200_score"],
+        "ema50_score": score_ergebnis["ema50_score"],
+        "turnaround_score": score_ergebnis["turnaround_score"],
         "regime_ok": regime_ok,
         "yahoo_zeit": yahoo_zeit,
     }, erfolgreicher_ticker
