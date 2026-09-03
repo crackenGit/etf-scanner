@@ -861,12 +861,54 @@ with tab1:
         st.write("Keine ETFs in der Watchlist.")
 
 # --- TAB 2: PORTFOLIO-MANAGER ---
+
+# Manuelle Signalstufen-Zuordnung: greift nur, wenn portfolio.py für die
+# ISIN weder 'signal_stufe' noch 'dip_score_bei_kauf' gesetzt hat - damit
+# ihr Zielkurs/Abstand seht, ohne portfolio.py sofort anfassen zu müssen.
+# Werte in portfolio.py haben immer Vorrang.
+MANUELLE_SIGNAL_STUFEN = {
+    "IE0007Y8Y157": "soft",
+    "IE000I8KRLL9": "voll",
+}
+
+
+def performance_farbe(pct):
+    """5-stufiger Grün/Rot-Farbverlauf in 2-Prozentpunkt-Schritten.
+    Referenzpunkt: der Grünton aus der Watchlist (#d4edda) entspricht 4-6%."""
+    if pct is None or pd.isna(pct):
+        return ""
+    if pct > 0:
+        if pct < 2:
+            return "background-color: #eef9f1; color: #155724;"
+        elif pct < 4:
+            return "background-color: #dcf1e0; color: #155724;"
+        elif pct < 6:
+            return "background-color: #d4edda; color: #155724;"
+        elif pct < 8:
+            return "background-color: #a8dab5; color: #0e3a1d; font-weight: bold;"
+        else:
+            return "background-color: #7cc794; color: #0e3a1d; font-weight: bold;"
+    elif pct < 0:
+        if pct >= -2:
+            return "background-color: #fdf2f2; color: #721c24;"
+        elif pct >= -4:
+            return "background-color: #f8d7da; color: #721c24;"
+        elif pct >= -6:
+            return "background-color: #f1b0b7; color: #58151c;"
+        elif pct >= -8:
+            return "background-color: #e78088; color: #58151c; font-weight: bold;"
+        else:
+            return "background-color: #dc3545; color: #ffffff; font-weight: bold;"
+    return ""
+
+
 with tab2:
     st.subheader("📊 Aktive Positionen")
 
     if not aktive_positionen:
         st.info("Aktuell keine aktiven offenen Positionen im Portfolio.")
     else:
+        sektor_lookup = {e["isin"]: e["sektor"] for e in etfs}
         portfolio_zeilen = []
         fehler_liste = []
 
@@ -879,10 +921,11 @@ with tab2:
 
                 current_price = data["close"]
                 buy_price = float(pos["buy_price"])
+                shares = float(pos.get("shares", 0))
                 ist_alt_position = pos.get("partially_sold", False)
 
-                # Signalstufe: bevorzugt direkt aus portfolio.py ('signal_stufe'),
-                # sonst aus dem bei Kauf gespeicherten Score ableiten, sonst unbekannt.
+                # Signalstufe: portfolio.py ('signal_stufe') > gespeicherter
+                # Score ('dip_score_bei_kauf') > manuelle Zuordnung oben > unbekannt.
                 stufe = pos.get("signal_stufe")
                 if stufe not in ("soft", "voll"):
                     gespeicherter_score = pos.get("dip_score_bei_kauf")
@@ -893,6 +936,8 @@ with tab2:
                     )
                     if stufe == "kein":
                         stufe = None
+                if stufe not in ("soft", "voll"):
+                    stufe = MANUELLE_SIGNAL_STUFEN.get(pos["isin"])
 
                 if ist_alt_position:
                     ziel_pct, ziel_kurs = None, None
@@ -914,6 +959,7 @@ with tab2:
                     ziel_erreicht = False
 
                 performance_pct = ((current_price - buy_price) / buy_price) * 100
+                gewinn_euro = (current_price - buy_price) * shares
 
                 days_held = 0
                 if pos.get("buy_date"):
@@ -924,15 +970,17 @@ with tab2:
                 portfolio_zeilen.append({
                     "Name": pos.get("name", ticker_used),
                     "ISIN": pos["isin"],
-                    "WKN": pos.get("wkn", "-"),
+                    "Sektor": pos.get("sektor") or sektor_lookup.get(pos["isin"], "-"),
                     "Ticker": ticker_used,
                     "Kurs": current_price,
                     "Kaufkurs": buy_price,
+                    "Stückzahl": shares,
                     "Signal": "alt" if ist_alt_position else (stufe or "unbekannt"),
                     "Zielkurs": ziel_kurs,
                     "Abstand_Euro": abstand_euro,
                     "Abstand_Pct": abstand_pct,
                     "Performance_Pct": performance_pct,
+                    "Gewinn_Euro": gewinn_euro,
                     "Tage": days_held,
                     "Ziel_Erreicht": ziel_erreicht,
                 })
@@ -964,9 +1012,10 @@ with tab2:
             display_df = pd.DataFrame()
             display_df["Name"] = df_portfolio["Name"]
             display_df["ISIN"] = df_portfolio["ISIN"]
-            display_df["WKN"] = df_portfolio["WKN"]
+            display_df["Sektor"] = df_portfolio["Sektor"]
             display_df["Kurs"] = df_portfolio["Kurs"].map(lambda x: f"{x:.2f} €")
             display_df["Kaufkurs"] = df_portfolio["Kaufkurs"].map(lambda x: f"{x:.2f} €")
+            display_df["Stückzahl"] = df_portfolio["Stückzahl"].map(lambda x: f"{x:g}")
             display_df["Signal"] = df_portfolio["Signal"].map(
                 lambda s: {
                     "voll": "🔥 Voll",
@@ -989,6 +1038,7 @@ with tab2:
             display_df["Performance"] = df_portfolio["Performance_Pct"].map(
                 lambda x: f"{x:+.2f}%"
             )
+            display_df["Gewinn"] = df_portfolio["Gewinn_Euro"].map(lambda x: f"{x:+.2f} €")
             display_df["Tage"] = df_portfolio["Tage"]
 
             def style_portfolio(df):
@@ -1002,6 +1052,10 @@ with tab2:
                         )
                         for col in df.columns:
                             styles.loc[idx, col] = color
+
+                    styles.loc[idx, "Performance"] = performance_farbe(
+                        row_raw["Performance_Pct"]
+                    )
                 return styles
 
             styled_portfolio = display_df.style.apply(style_portfolio, axis=None)
