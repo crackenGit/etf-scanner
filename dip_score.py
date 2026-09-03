@@ -32,6 +32,11 @@ import pandas as pd
 # ==========================================
 KAUFSIGNAL_SCHWELLE = 70.0        # "volles" Kaufsignal - Backtest-Ziel ~10%+
 SOFT_KAUFSIGNAL_SCHWELLE = 60.0   # "softes" Kaufsignal - Backtest-Ziel ~5%+
+ZIEL_RENDITE_SOFT_PCT = 4.0       # Exit-Ziel für softes Signal - Backtest-optimiert
+                                   # (schlägt EMA50-Regel in Rendite/Tag: 0.32 vs 0.13 %/Tag)
+ZIEL_RENDITE_VOLL_PCT = 7.0       # Exit-Ziel für volles Signal - Backtest-optimiert
+                                   # (schlägt EMA50-Regel auch absolut: +3.58% vs +3.27%,
+                                   # bei weniger als halber Haltedauer)
 RSI_WATCHLIST_SCHWELLE = 40.0
 REGIME_MALUS_FAKTOR = 0.8
 MARKT_BENCHMARK_TICKER = "URTH"  # Breiter Referenzindex (iShares MSCI World). Alternative: "^STOXX" (Europa)
