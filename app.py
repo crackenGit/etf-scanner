@@ -230,7 +230,7 @@ def berechne_indikatoren(isin, ticker=None):
     # Solange der heutige Schlusskurs noch nicht sicher final bestätigt ist
     # (Börse noch offen ODER Schluss liegt noch keine DATENSTAND_CUTOFF_STUNDE
     # zurück), wird stattdessen der letzte bestätigte Vortag verwendet. Das
-    # verhindert, dass Turnaround/RSI auf Basis einer noch laufenden oder
+    # verhindert, dass RSI/Kursrückgang auf Basis einer noch laufenden oder
     # frisch-vorläufigen Tageskerze berechnet werden.
     try:
         jetzt_berlin = datetime.now(ZoneInfo("Europe/Berlin"))
@@ -299,7 +299,8 @@ def berechne_indikatoren(isin, ticker=None):
         "trend_score": score_ergebnis["trend_score"],
         "gd200_score": score_ergebnis["gd200_score"],
         "ema50_score": score_ergebnis["ema50_score"],
-        "turnaround_score": score_ergebnis["turnaround_score"],
+        "drawdown_score": score_ergebnis["drawdown_score"],
+        "drawdown_20t_pct": score_ergebnis["drawdown_20t_pct"],
         "regime_ok": regime_ok,
         "yahoo_zeit": yahoo_zeit,
     }, erfolgreicher_ticker
@@ -313,33 +314,39 @@ st.title("📈 ETF Dip-Scanner & Portfolio-Manager")
 with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     st.markdown(f"""
     ### 🎯 Ein Kaufsignal = Dip Score ≥ {KAUFSIGNAL_SCHWELLE:.0f}
-    Es gibt keinen separaten Ja/Nein-Filter mehr - alle bisherigen Kriterien
-    (RSI, Trend, Turnaround, Marktumfeld) fließen in **einen einzigen Score**
-    von maximal ca. 100 Punkten ein. Je höher der Score, desto überzeugender
-    das Signal.
+    Es gibt keinen separaten Ja/Nein-Filter - alle Kriterien (RSI, Trend,
+    Kursrückgang, Marktumfeld) fließen in **einen einzigen Score** von
+    maximal ca. 100 Punkten ein. Je höher der Score, desto überzeugender
+    das Signal. Die Gewichtung basiert auf einem Backtest über ~277.000
+    ETF-Tage, nicht nur auf Annahmen.
 
     | Komponente | Max. Punkte | Was gemessen wird |
     |---|---|---|
-    | RSI-Überverkauft-Tiefe | 20 | Wie weit der RSI unter 45 liegt |
+    | RSI-Sweet-Spot | 20 | Abstand zu RSI 25 (siehe unten) |
     | Trend intakt | 15 | EMA50 > GD200 **und** GD200 steigt |
     | Puffer über GD200 | 15 | Sicherheitsabstand zur langfristigen Stütze |
     | Mean-Reversion-Potenzial | 15 | Rebound-Distanz bis zur EMA50 |
-    | **Turnaround-Qualität** | **35** | Echte Erholung statt fallendes Messer |
+    | **Kursrückgang-Tiefe** | **35** | Wie stark der Kurs vor dem Signal fiel |
 
-    **Wichtig:** Ohne jegliche Turnaround-Bestätigung sind maximal **65** der
-    100 Punkte erreichbar (RSI + Trend + GD200-Puffer + EMA50-Potenzial).
-    Ein Kaufsignal ab {KAUFSIGNAL_SCHWELLE:.0f} Punkten ist damit rechnerisch
-    nur möglich, wenn zusätzlich ein relevanter Teil der 35 Turnaround-Punkte
-    dazukommt.
+    **Wichtig:** Ohne nennenswerten vorherigen Kursrückgang sind maximal
+    **65** der 100 Punkte erreichbar (RSI + Trend + GD200-Puffer +
+    EMA50-Potenzial). Ein Kaufsignal ab {KAUFSIGNAL_SCHWELLE:.0f} Punkten
+    ist damit rechnerisch nur möglich, wenn der Kurs auch tatsächlich
+    spürbar gefallen ist.
 
-    ### 🔄 Die drei Turnaround-Bausteine
-    1. **ATR-normalisierter Bounce vom Tagestief** (bis 15 Pkt.) - die Erholung
-       wird relativ zur normalen Tagesschwankung (ATR14) des jeweiligen ETFs
-       bewertet, nicht mit einer fixen Prozentzahl für alle ETFs gleichermaßen.
-    2. **RSI-Richtungswechsel** (bis 10 Pkt.) - je stärker der RSI von gestern
-       auf heute dreht, desto mehr Punkte.
-    3. **Bestätigungs-Bonus** (10 Pkt.) - Schlusskurs über dem Vortageshoch,
-       also ein echter Anschlusstag statt nur ein kurzer Reflex vom Tagestief.
+    ### 🎯 RSI-Sweet-Spot statt "je tiefer desto besser"
+    Der Backtest zeigte einen Peak bei RSI 20-30 - RSI unter 20 performte
+    **schlechter** (vermutlich eher Crash-Signal als normaler Dip). Der
+    Score hat deshalb sein Maximum bei RSI 25 und fällt zu **beiden**
+    Seiten linear ab, statt einfach mit sinkendem RSI immer weiter zu
+    steigen.
+
+    ### 📉 Kursrückgang-Tiefe (größte Einzelkomponente)
+    Rückgang vom 20-Tage-Hoch bis heute. Das war im Backtest das mit
+    Abstand stärkste Einzelsignal: Die Wahrscheinlichkeit, +10% zu
+    erreichen, stieg sauber von ~23% (flacher Rückgang) auf ~80% (Rückgang
+    über 30%) - "größerer Dip = größerer Rebound" bestätigte sich klar,
+    "fallendes Messer" nicht. Volle Punktzahl ab ca. 29% Rückgang.
 
     ### 🌍 Marktregime-Filter
     Zusätzlich wird geprüft, ob der breite Referenzindex (`{MARKT_BENCHMARK_TICKER}`)
@@ -485,7 +492,8 @@ if "watchlist_signale" not in st.session_state:
             gd200_steigt = data["gd200_steigt"]
             perf_1w = data["perf_1w"]
             dip_score = data["dip_score"]
-            turnaround_score = data["turnaround_score"]
+            drawdown_score = data["drawdown_score"]
+            drawdown_20t_pct = data["drawdown_20t_pct"]
             regime_ok = data["regime_ok"]
             live_kurs = data["live_close"]
             live_rsi = data["live_rsi"]
@@ -518,7 +526,8 @@ if "watchlist_signale" not in st.session_state:
                 "EMA50": ema50,
                 "1W Perf.": perf_1w,
                 "Dip Score": dip_score,
-                "Turnaround Score": turnaround_score,
+                "Drawdown Score": drawdown_score,
+                "Drawdown_20t_Pct": drawdown_20t_pct,
                 "Marktregime_OK": regime_ok,
                 "Zeitstempel": data["yahoo_zeit"],
                 "Ist_Kaufsignal": ist_kaufsignal,
@@ -694,8 +703,9 @@ with tab1:
         display_df["1W Perf."] = df_watch["1W Perf."].map(
             lambda x: f"{x:+.2f}%"
         )
-        display_df["Turnaround"] = df_watch["Turnaround Score"].map(
-            lambda x: f"{x:.0f}/35"
+        display_df["Rückgang"] = df_watch.apply(
+            lambda r: f"{r['Drawdown_20t_Pct']:.1f}% ({r['Drawdown Score']:.0f}/35)",
+            axis=1,
         )
         display_df["Dip Score"] = df_watch["Dip Score"].map(lambda x: f"{x:.1f}")
         display_df["Signal"] = df_watch["Ist_Kaufsignal"].map(
