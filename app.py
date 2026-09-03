@@ -219,8 +219,8 @@ def berechne_indikatoren(isin, ticker=None):
         live_delta = close.diff()
         live_gain = live_delta.clip(lower=0)
         live_loss = -1 * live_delta.clip(upper=0)
-        live_avg_gain = live_gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
-        live_avg_loss = live_loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+        live_avg_gain = live_gain.ewm(alpha=1 / 2, min_periods=2, adjust=False).mean()
+        live_avg_loss = live_loss.ewm(alpha=1 / 2, min_periods=2, adjust=False).mean()
         live_rsi_series = 100 - (100 / (1 + (live_avg_gain / live_avg_loss)))
         live_rsi = float(live_rsi_series.iloc[-1])
     except Exception:
