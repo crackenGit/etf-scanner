@@ -45,6 +45,9 @@ ZIEL_RENDITE_SOFT_PCT = 4.0       # Exit-Ziel für softes Signal - VOR der Schwe
 ZIEL_RENDITE_VOLL_PCT = 7.0       # Exit-Ziel für volles Signal - dito, noch zu validieren
 RSI_WATCHLIST_SCHWELLE = 40.0
 REGIME_MALUS_FAKTOR = 0.8
+DRAWDOWN_SCORE_MAX = 30.0         # Cap fuer die Rueckgang-Komponente (siehe
+                                   # score_am_punkt) - als Konstante, damit
+                                   # Formel und Anzeige (app.py) nie auseinanderlaufen
 MARKT_BENCHMARK_TICKER = "URTH"  # Breiter Referenzindex (iShares MSCI World). Alternative: "^STOXX" (Europa)
 
 # Sektor-spezifischer Aufschlag (in Punkten) auf KAUFSIGNAL_SCHWELLE/
@@ -179,7 +182,7 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
     #    EMA50-Potenzial oben. Cap bei 6 ATR (deckt sich mit dem Punkt,
     #    an dem der Effekt bei den meisten Sektoren saettigt/kippt).
     drawdown_magnitude = max(0.0, drawdown_atr_multiple)
-    drawdown_score = min(30.0, drawdown_magnitude * 5.0)
+    drawdown_score = min(DRAWDOWN_SCORE_MAX, drawdown_magnitude * 5.0)
 
     basis_score = rsi_score + trend_score + gd200_score + ema50_score  # max. 70
     dip_score_roh = basis_score + drawdown_score  # max. 100
@@ -206,6 +209,7 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
         "ema50": ema50_heute,
         "gd200_steigt": gd200_steigt,
         "drawdown_20t_pct": round(drawdown_20t_pct, 2),
+        "drawdown_atr_multiple": round(drawdown_atr_multiple, 2),
         "rsi_score": round(rsi_score, 1),
         "trend_score": round(trend_score, 1),
         "gd200_score": round(gd200_score, 1),
