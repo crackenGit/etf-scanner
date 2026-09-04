@@ -21,6 +21,7 @@ from dip_score import (
     RSI_WATCHLIST_SCHWELLE,
     REGIME_MALUS_FAKTOR,
     MARKT_BENCHMARK_TICKER,
+    DRAWDOWN_SCORE_MAX,
 )
 
 import importlib
@@ -323,6 +324,7 @@ def berechne_indikatoren(isin, ticker=None):
         "drawdown_20t_pct": score_ergebnis["drawdown_20t_pct"],
         "regime_ok": regime_ok,
         "yahoo_zeit": yahoo_zeit,
+        "return_serie": close.pct_change().dropna().tail(180),
     }, erfolgreicher_ticker
 
 
@@ -583,6 +585,7 @@ with st.sidebar.expander("🔍 Debug: Einzelne ISIN prüfen"):
             st.error("Keine Daten für diese ISIN/diesen Ticker gefunden.")
 
 etfs = parse_isin_file("isin.txt")
+sektor_lookup = {e["isin"]: e["sektor"] for e in etfs}
 
 portfolio_isins = [p["isin"] for p in PORTFOLIO if not p.get("sold", False)]
 etfs_isins = {e["isin"] for e in etfs}
@@ -637,6 +640,7 @@ if "watchlist_signale" not in st.session_state:
             dip_score = data["dip_score"]
             drawdown_score = data["drawdown_score"]
             drawdown_20t_pct = data["drawdown_20t_pct"]
+            drawdown_atr_multiple = data["drawdown_atr_multiple"]
             gd200_bruch_malus = data["gd200_bruch_malus_faktor"]
             regime_ok = data["regime_ok"]
             live_kurs = data["live_close"]
@@ -682,12 +686,14 @@ if "watchlist_signale" not in st.session_state:
                 "Noetige_Punkte": noetige_punkte,
                 "Drawdown Score": drawdown_score,
                 "Drawdown_20t_Pct": drawdown_20t_pct,
+                "Drawdown_ATR_Multiple": drawdown_atr_multiple,
                 "GD200_Bruch_Malus": gd200_bruch_malus,
                 "Marktregime_OK": regime_ok,
                 "Zeitstempel": data["yahoo_zeit"],
                 "Ist_Kaufsignal": ist_kaufsignal,
                 "Ist_Soft_Signal": ist_soft_signal,
                 "Ist_Portfolio": ist_in_portfolio,
+                "Return_Serie": data["return_serie"],
             }
 
             if ist_watchlist_kandidat:
@@ -805,6 +811,67 @@ with tab1:
 
         df_watch = df_watch.reset_index(drop=True)
 
+        # --- DIVERSIFIKATIONS-FILTER ---
+        # Ziel: keine neuen Signale aus Sektoren zeigen, in denen bereits
+        # investiert ist, und keine Signale, die stark mit einer bestehenden
+        # Position korrelieren (deckt z.B. "AI-ETF haengt stark an Halbleiter"
+        # ab, auch wenn die Sektor-Etiketten unterschiedlich sind). Die eigene
+        # gehaltene Position selbst wird nie ausgeblendet (Nachkauf-Check
+        # bleibt sichtbar). Siehe Chat fuer die Herleitung.
+        KORRELATIONS_SCHWELLE = 0.80
+
+        investierte_sektoren = {
+            sektor_lookup.get(isin) for isin in portfolio_isins if sektor_lookup.get(isin)
+        }
+
+        portfolio_returns = {}
+        for pos in aktive_positionen:
+            isin = pos["isin"]
+            treffer = df_watch[df_watch["ISIN"] == isin]
+            if not treffer.empty and treffer.iloc[0]["Return_Serie"] is not None:
+                portfolio_returns[isin] = treffer.iloc[0]["Return_Serie"]
+            else:
+                pos_data, _ = berechne_indikatoren(isin, pos.get("ticker"))
+                if pos_data and pos_data.get("return_serie") is not None:
+                    portfolio_returns[isin] = pos_data["return_serie"]
+
+        def pruefe_ueberlappung(row):
+            if row["Ist_Portfolio"]:
+                return False, ""
+            gruende = []
+            if row["Sektor"] in investierte_sektoren:
+                gruende.append(f"Sektor „{row['Sektor']}“ bereits investiert")
+
+            max_korr, korr_mit_isin = 0.0, None
+            eigene_serie = row.get("Return_Serie")
+            if eigene_serie is not None and len(eigene_serie) > 30:
+                for isin, serie in portfolio_returns.items():
+                    if serie is None or len(serie) < 30:
+                        continue
+                    gemeinsam = pd.concat([eigene_serie, serie], axis=1, join="inner")
+                    if len(gemeinsam) < 30:
+                        continue
+                    korr = gemeinsam.iloc[:, 0].corr(gemeinsam.iloc[:, 1])
+                    if korr is not None and korr > max_korr:
+                        max_korr, korr_mit_isin = korr, isin
+
+            if max_korr > KORRELATIONS_SCHWELLE:
+                pos_name = next(
+                    (p.get("name", korr_mit_isin) for p in aktive_positionen
+                     if p["isin"] == korr_mit_isin),
+                    korr_mit_isin,
+                )
+                gruende.append(f"{max_korr * 100:.0f}% korreliert mit {pos_name}")
+
+            return (len(gruende) > 0), " · ".join(gruende)
+
+        _ueberlappung = df_watch.apply(pruefe_ueberlappung, axis=1)
+        df_watch["Ausgeblendet"] = [r[0] for r in _ueberlappung]
+        df_watch["Ausblend_Grund"] = [r[1] for r in _ueberlappung]
+
+        df_neu = df_watch[~df_watch["Ausgeblendet"]].reset_index(drop=True)
+        df_ausgeblendet = df_watch[df_watch["Ausgeblendet"]].reset_index(drop=True)
+
         def format_name_rank(row):
             name = row["Name"]
             rank = row["Dip_Rank"]
@@ -823,76 +890,6 @@ with tab1:
             else:
                 return f"{praefix}{name}"
 
-        display_df = pd.DataFrame()
-        display_df["Dip Score"] = df_watch.apply(
-            lambda r: f"{r['Dip Score']:.1f}/{r['Noetige_Punkte']:.0f}", axis=1
-        )
-        display_df["Name"] = [
-            format_name_rank(df_watch.iloc[i]) for i in range(len(df_watch))
-        ]
-        display_df["ISIN"] = df_watch["ISIN"]
-        display_df["Sektor"] = df_watch["Sektor"]
-        display_df["Ticker"] = df_watch["Ticker"]
-
-        display_df["Kurs"] = df_watch["Kurs"].map(lambda x: f"{x:.2f} €")
-        display_df["RSI"] = df_watch.apply(
-            lambda r: f"{r['RSI']:.1f} ({r['RSI_Score']:.0f}/20)", axis=1
-        )
-
-        display_df["Live"] = df_watch.apply(
-            lambda r: (
-                f"{r['Live_Kurs']:.2f} € ("
-                f"{r['Live_RSI']:.1f} "
-                + (
-                    "↑"
-                    if r["Live_RSI"] > r["RSI"]
-                    else ("↓" if r["Live_RSI"] < r["RSI"] else "→")
-                )
-                + ")"
-            ),
-            axis=1,
-        )
-
-        display_df["Trend"] = df_watch.apply(
-            lambda r: (
-                ("✅" if r["EMA50"] > r["GD200"] else "❌")
-                + ("✅" if r["GD200_steigt"] else "❌")
-                + f" {r['Trend_Score']:.0f}/15"
-            ),
-            axis=1,
-        )
-
-        display_df["GD200"] = df_watch.apply(
-            lambda r: (
-                f"{r['GD200']:.2f} €"
-                f" ({((r['GD200'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
-                f" · {r['GD200_Score']:.0f}/15"
-            ),
-            axis=1,
-        )
-
-        display_df["EMA50"] = df_watch.apply(
-            lambda r: (
-                f"{r['EMA50']:.2f} €"
-                f" ({((r['EMA50'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
-                f" · {r['EMA50_Score']:.0f}/15"
-            ),
-            axis=1,
-        )
-
-        display_df["Rückgang"] = df_watch.apply(
-            lambda r: f"{r['Drawdown_20t_Pct']:.1f}% ({r['Drawdown Score']:.0f}/35)",
-            axis=1,
-        )
-
-        display_df["Regime"] = df_watch["Marktregime_OK"].map(
-            lambda ok: "🟢 ×1.00" if ok else f"🔴 ×{REGIME_MALUS_FAKTOR:.2f}"
-        )
-
-        display_df["Bruch-Malus"] = df_watch["GD200_Bruch_Malus"].map(
-            lambda x: f"×{x:.2f}"
-        )
-
         def signal_label(row):
             if row["Ist_Kaufsignal"]:
                 return "🔥 KAUFEN (Ziel ~10%+)"
@@ -901,79 +898,175 @@ with tab1:
             else:
                 return "👀 Beobachten"
 
-        display_df["Signal"] = [
-            signal_label(df_watch.iloc[i]) for i in range(len(df_watch))
-        ]
-        display_df["Zeitstempel"] = df_watch["Zeitstempel"]
+        def rendere_watchlist_gruppe(df_gruppe):
+            """Rendert eine (Teil-)Watchlist als formatierte, eingefärbte
+            Tabelle. Nimmt df_gruppe explizit als Parameter (statt auf ein
+            äußeres df_watch zuzugreifen), damit dieselbe Funktion sowohl für
+            die volle Liste als auch für einzelne Sektor-Gruppen nutzbar ist."""
+            display_df = pd.DataFrame()
+            display_df["Dip Score"] = df_gruppe.apply(
+                lambda r: f"{r['Dip Score']:.1f}/{r['Noetige_Punkte']:.0f}", axis=1
+            )
+            display_df["Name"] = [
+                format_name_rank(df_gruppe.iloc[i]) for i in range(len(df_gruppe))
+            ]
+            display_df["ISIN"] = df_gruppe["ISIN"]
+            display_df["Sektor"] = df_gruppe["Sektor"]
+            display_df["Ticker"] = df_gruppe["Ticker"]
 
-        def style_watchlist_cells(df):
-            styles = pd.DataFrame("", index=df.index, columns=df.columns)
-            for idx in df.index:
-                row_raw = df_watch.loc[idx]
+            display_df["Kurs"] = df_gruppe["Kurs"].map(lambda x: f"{x:.2f} €")
+            display_df["RSI"] = df_gruppe.apply(
+                lambda r: f"{r['RSI']:.1f} ({r['RSI_Score']:.0f}/20)", axis=1
+            )
 
-                if row_raw.get("Ist_Portfolio", False):
-                    color = "background-color: #e8daef; color: #111111;"
-                else:
-                    color = ""
-
-                if color:
-                    for col in df.columns:
-                        styles.loc[idx, col] = color
-
-                dip_rank = row_raw.get("Dip_Rank", 999)
-                if (
-                    dip_rank in (1, 2, 3)
-                    and not row_raw["Ist_Kaufsignal"]
-                    and not row_raw.get("Ist_Soft_Signal", False)
-                    and not row_raw.get("Ist_Portfolio", False)
-                ):
-                    medaillen = {1: "#fef9e7", 2: "#f2f3f4", 3: "#fbeee6"}
-                    styles.loc[idx, "Name"] = (
-                        f"background-color: {medaillen[dip_rank]}; font-weight: bold;"
+            display_df["Live"] = df_gruppe.apply(
+                lambda r: (
+                    f"{r['Live_Kurs']:.2f} € ("
+                    f"{r['Live_RSI']:.1f} "
+                    + (
+                        "↑"
+                        if r["Live_RSI"] > r["RSI"]
+                        else ("↓" if r["Live_RSI"] < r["RSI"] else "→")
                     )
+                    + ")"
+                ),
+                axis=1,
+            )
 
-                # GD200-Zelle: Kurs vs. GD200 (grün = klar drüber, grau = knapp
-                # drüber (<=1%), rot = drunter)
-                kurs_val = row_raw["Kurs"]
-                gd200_val = row_raw["GD200"]
-                rsi_val = row_raw["RSI"]
+            display_df["Trend"] = df_gruppe.apply(
+                lambda r: (
+                    ("✅" if r["EMA50"] > r["GD200"] else "❌")
+                    + ("✅" if r["GD200_steigt"] else "❌")
+                    + f" {r['Trend_Score']:.0f}/15"
+                ),
+                axis=1,
+            )
 
-                # RSI-Zelle: <=31.9 grün, 32-35 grau, Rest (>35) rot
-                if rsi_val <= 31.9:
-                    styles.loc[idx, "RSI"] = "background-color: #d4edda; color: #155724;"
-                elif rsi_val <= 35:
-                    styles.loc[idx, "RSI"] = "background-color: #e2e3e5; color: #383d41;"
-                else:
-                    styles.loc[idx, "RSI"] = "background-color: #f8d7da; color: #721c24;"
+            display_df["GD200"] = df_gruppe.apply(
+                lambda r: (
+                    f"{r['GD200']:.2f} €"
+                    f" ({((r['Kurs'] - r['GD200']) / r['GD200']) * 100:+.1f}%)"
+                    f" · {r['GD200_Score']:.0f}/15"
+                ),
+                axis=1,
+            )
 
-                # Live-Zelle: Tendenz Live-RSI vs. bestätigter RSI
-                live_rsi_val = row_raw.get("Live_RSI")
-                if live_rsi_val is not None:
-                    if live_rsi_val > rsi_val:
-                        styles.loc[idx, "Live"] = "background-color: #d4edda; color: #155724;"
-                    elif live_rsi_val < rsi_val:
-                        styles.loc[idx, "Live"] = "background-color: #f8d7da; color: #721c24;"
+            display_df["EMA50"] = df_gruppe.apply(
+                lambda r: (
+                    f"{r['EMA50']:.2f} €"
+                    f" ({((r['EMA50'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
+                    f" · {r['EMA50_Score']:.0f}/15"
+                ),
+                axis=1,
+            )
+
+            display_df["Rückgang"] = df_gruppe.apply(
+                lambda r: f"{r['Drawdown_ATR_Multiple']:.1f} ATR ({r['Drawdown_20t_Pct']:.1f}%) · {r['Drawdown Score']:.0f}/{DRAWDOWN_SCORE_MAX:.0f}",
+                axis=1,
+            )
+
+            display_df["Regime"] = df_gruppe["Marktregime_OK"].map(
+                lambda ok: "🟢 ×1.00" if ok else f"🔴 ×{REGIME_MALUS_FAKTOR:.2f}"
+            )
+
+            display_df["Bruch-Malus"] = df_gruppe["GD200_Bruch_Malus"].map(
+                lambda x: f"×{x:.2f}"
+            )
+
+            display_df["Signal"] = [
+                signal_label(df_gruppe.iloc[i]) for i in range(len(df_gruppe))
+            ]
+            display_df["Zeitstempel"] = df_gruppe["Zeitstempel"]
+
+            def style_watchlist_cells(df):
+                styles = pd.DataFrame("", index=df.index, columns=df.columns)
+                for idx in df.index:
+                    row_raw = df_gruppe.loc[idx]
+
+                    if row_raw.get("Ist_Portfolio", False):
+                        color = "background-color: #e8daef; color: #111111;"
                     else:
-                        styles.loc[idx, "Live"] = "background-color: #e2e3e5; color: #383d41;"
+                        color = ""
 
-                gd200_diff_pct = (
-                    ((kurs_val - gd200_val) / gd200_val) * 100 if gd200_val else 0.0
-                )
-                if gd200_diff_pct <= 0:
-                    styles.loc[idx, "GD200"] = "background-color: #f8d7da; color: #721c24;"
-                elif gd200_diff_pct <= 1:
-                    styles.loc[idx, "GD200"] = "background-color: #e2e3e5; color: #383d41;"
-                else:
-                    styles.loc[idx, "GD200"] = "background-color: #d4edda; color: #155724;"
+                    if color:
+                        for col in df.columns:
+                            styles.loc[idx, col] = color
 
-                styles.loc[idx, "Dip Score"] = (
-                    "font-weight: bold; text-align: center;"
-                )
+                    dip_rank = row_raw.get("Dip_Rank", 999)
+                    if (
+                        dip_rank in (1, 2, 3)
+                        and not row_raw["Ist_Kaufsignal"]
+                        and not row_raw.get("Ist_Soft_Signal", False)
+                        and not row_raw.get("Ist_Portfolio", False)
+                    ):
+                        medaillen = {1: "#fef9e7", 2: "#f2f3f4", 3: "#fbeee6"}
+                        styles.loc[idx, "Name"] = (
+                            f"background-color: {medaillen[dip_rank]}; font-weight: bold;"
+                        )
 
-            return styles
+                    kurs_val = row_raw["Kurs"]
+                    gd200_val = row_raw["GD200"]
+                    rsi_val = row_raw["RSI"]
 
-        styled_df = display_df.style.apply(style_watchlist_cells, axis=None)
-        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                    if rsi_val <= 31.9:
+                        styles.loc[idx, "RSI"] = "background-color: #d4edda; color: #155724;"
+                    elif rsi_val <= 35:
+                        styles.loc[idx, "RSI"] = "background-color: #e2e3e5; color: #383d41;"
+                    else:
+                        styles.loc[idx, "RSI"] = "background-color: #f8d7da; color: #721c24;"
+
+                    live_rsi_val = row_raw.get("Live_RSI")
+                    if live_rsi_val is not None:
+                        if live_rsi_val > rsi_val:
+                            styles.loc[idx, "Live"] = "background-color: #d4edda; color: #155724;"
+                        elif live_rsi_val < rsi_val:
+                            styles.loc[idx, "Live"] = "background-color: #f8d7da; color: #721c24;"
+                        else:
+                            styles.loc[idx, "Live"] = "background-color: #e2e3e5; color: #383d41;"
+
+                    gd200_diff_pct = (
+                        ((kurs_val - gd200_val) / gd200_val) * 100 if gd200_val else 0.0
+                    )
+                    if gd200_diff_pct <= 0:
+                        styles.loc[idx, "GD200"] = "background-color: #f8d7da; color: #721c24;"
+                    elif gd200_diff_pct <= 1:
+                        styles.loc[idx, "GD200"] = "background-color: #e2e3e5; color: #383d41;"
+                    else:
+                        styles.loc[idx, "GD200"] = "background-color: #d4edda; color: #155724;"
+
+                    styles.loc[idx, "Dip Score"] = "font-weight: bold; text-align: center;"
+
+                return styles
+
+            styled_df = display_df.style.apply(style_watchlist_cells, axis=None)
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+        # --- Sektor-gruppierte Anzeige der "neuen Chancen" ---
+        if not df_neu.empty:
+            sektor_reihenfolge = (
+                df_neu.groupby("Sektor")["Dip Score"].max()
+                .sort_values(ascending=False)
+                .index.tolist()
+            )
+            for sektor in sektor_reihenfolge:
+                gruppe = df_neu[df_neu["Sektor"] == sektor].reset_index(drop=True)
+                st.markdown(f"#### {sektor} ({len(gruppe)})")
+                rendere_watchlist_gruppe(gruppe)
+        else:
+            st.write("Keine neuen (nicht-überlappenden) Signale aktuell.")
+
+        if not df_ausgeblendet.empty:
+            with st.expander(
+                f"🔕 {len(df_ausgeblendet)} Signal(e) wegen Portfolio-Nähe "
+                f"ausgeblendet (bereits investierter Sektor oder "
+                f">{KORRELATIONS_SCHWELLE * 100:.0f}% korreliert)"
+            ):
+                for _, row in df_ausgeblendet.sort_values(
+                    "Dip Score", ascending=False
+                ).iterrows():
+                    st.caption(
+                        f"**{row['Name']}** ({row['Sektor']}) - {row['Ausblend_Grund']}"
+                    )
     else:
         st.write("Keine ETFs in der Watchlist.")
 
@@ -1025,7 +1118,6 @@ with tab2:
     if not aktive_positionen:
         st.info("Aktuell keine aktiven offenen Positionen im Portfolio.")
     else:
-        sektor_lookup = {e["isin"]: e["sektor"] for e in etfs}
         portfolio_zeilen = []
         fehler_liste = []
 
