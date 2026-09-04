@@ -13,11 +13,14 @@ Stand nach Backtest-Auswertung (277.000+ ETF-Tage, Einzelfaktor-Tests):
 - Turnaround-Score: ENTFERNT. Zeigte in drei unabhängigen Tests
   (Korrelation, grobe Buckets, isolierte Quote-Analyse) durchgehend
   keine Vorhersagekraft, trotz dreimaliger Lockerung der Formel.
-- Kursrückgang-Tiefe (drawdown_20t_pct): NEU aufgenommen, ersetzt den
-  Turnaround-Score im Punktbudget. War das mit Abstand stärkste
-  Einzelsignal im Backtest (quote_10pct stieg sauber von 23% auf 80%
-  mit zunehmender Rückgangstiefe) - "größerer Dip = größerer Rebound"
-  statt "fallendes Messer" bestätigt sich hier klar.
+- Kursrückgang-Tiefe: ATR-NORMALISIERT statt roher Prozentwert. Der rohe
+  Prozent-Rückgang war zwar das stärkste Einzelsignal, aber ein Test mit
+  ATR-Normierung zeigte: ein großer Teil davon war Sektor-/Volatilitäts-
+  Bias (rohe -30%-Rückgänge kommen fast nur bei volatilen Sektoren wie
+  Halbleiter/AI Hardware vor, die im Backtest-Zeitraum ohnehin besser
+  liefen). Nach ATR-Normierung bleibt ein kleinerer, aber sauberer und
+  sektor-fairer Effekt übrig - dafür ist die Kaufsignal-Schwelle nach
+  dieser Umstellung neu zu validieren (siehe Chat).
 
 Enthält bewusst KEINE Streamlit- oder yfinance-Abhängigkeiten, damit es
 sich auch von einem reinen Kommandozeilen-Skript (backtest.py) ohne
@@ -30,7 +33,11 @@ import pandas as pd
 # KONFIGURATION (identisch zu app.py - dort werden dieselben Werte
 # verwendet; falls in app.py angepasst, hier synchron halten)
 # ==========================================
-KAUFSIGNAL_SCHWELLE = 70.0        # "volles" Kaufsignal - Backtest-Ziel ~10%+
+KAUFSIGNAL_SCHWELLE = 71.0        # "volles" Kaufsignal - PLATZHALTER bis zum Re-Backtest
+                                   # mit der neuen ATR-Formel (auf 71 statt 70 gesetzt,
+                                   # da Basis-Komponenten jetzt max. 70 erreichen -
+                                   # ohne diesen Puffer waere ein Signal auch ganz
+                                   # ohne jeglichen Rueckgang moeglich)
 SOFT_KAUFSIGNAL_SCHWELLE = 60.0   # "softes" Kaufsignal - Backtest-Ziel ~5%+
 ZIEL_RENDITE_SOFT_PCT = 4.0       # Exit-Ziel für softes Signal - Backtest-optimiert
                                    # (schlägt EMA50-Regel in Rendite/Tag: 0.32 vs 0.13 %/Tag)
@@ -40,6 +47,17 @@ ZIEL_RENDITE_VOLL_PCT = 7.0       # Exit-Ziel für volles Signal - Backtest-opti
 RSI_WATCHLIST_SCHWELLE = 40.0
 REGIME_MALUS_FAKTOR = 0.8
 MARKT_BENCHMARK_TICKER = "URTH"  # Breiter Referenzindex (iShares MSCI World). Alternative: "^STOXX" (Europa)
+
+# Sektor-spezifischer Aufschlag (in Punkten) auf KAUFSIGNAL_SCHWELLE/
+# SOFT_KAUFSIGNAL_SCHWELLE. Aktuell bewusst LEER - wird erst nach dem
+# Re-Backtest mit der neuen ATR-Formel befuellt, sobald klar ist, welche
+# Sektoren bei fairer (ATR-normalisierter) Messung tatsaechlich seltener
+# die Zielrenditen erreichen. Siehe Chat fuer die Diskussion dazu
+# (Gesundheit/Konsumgueter als Kandidaten).
+SEKTOR_SCHWELLEN_AUFSCHLAG = {
+    # "Gesundheit": 10.0,
+    # "Konsumgüter": 15.0,
+}
 
 
 def berechne_indikator_serien(close: pd.Series, high: pd.Series, low: pd.Series) -> pd.DataFrame:
@@ -65,9 +83,22 @@ def berechne_indikator_serien(close: pd.Series, high: pd.Series, low: pd.Series)
     gd200_vor_10d = gd200.shift(10)
     gd200_steigt = gd200 > gd200_vor_10d
 
-    # Kursrückgang vom 20-Tage-Hoch bis heute (negativ oder 0)
+    # Kursrückgang vom 20-Tage-Hoch bis heute (negativ oder 0) - roh, nur
+    # noch zur Anzeige/Info, nicht mehr Grundlage des Scores (siehe unten)
     hoch_20t = close.rolling(window=20, min_periods=1).max()
     drawdown_20t_pct = ((close - hoch_20t) / hoch_20t) * 100
+
+    # ATR(14) - volatilitätsnormalisiert die Rückgangs-Komponente, damit
+    # ruhige und volatile ETFs fair verglichen werden (siehe Chat: rohe
+    # Prozent-Rückgänge waren stark sektor-/volatilitätsverzerrt)
+    prev_close = close.shift(1)
+    true_range = pd.concat([
+        (high - low),
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    atr14 = true_range.rolling(window=14).mean()
+    drawdown_atr_multiple = (hoch_20t - close) / atr14
 
     return pd.DataFrame({
         "close": close,
@@ -81,6 +112,7 @@ def berechne_indikator_serien(close: pd.Series, high: pd.Series, low: pd.Series)
         "avg_gain": avg_gain,
         "avg_loss": avg_loss,
         "drawdown_20t_pct": drawdown_20t_pct,
+        "drawdown_atr_multiple": drawdown_atr_multiple,
     })
 
 
@@ -108,6 +140,11 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
     drawdown_20t_pct = (
         float(row["drawdown_20t_pct"]) if not pd.isna(row["drawdown_20t_pct"]) else 0.0
     )
+    drawdown_atr_multiple = (
+        float(row["drawdown_atr_multiple"])
+        if not pd.isna(row["drawdown_atr_multiple"])
+        else 0.0
+    )
 
     # 1) RSI-Sweet-Spot (max. 20 Punkte): Peak bei RSI 25, faellt zu beiden
     #    Seiten linear ab. Backtest zeigte RSI<20 schlechter als RSI 20-30 -
@@ -126,20 +163,26 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
     )
     gd200_score = min(15.0, max(0.0, gd200_buffer_pct) * 0.9)
 
-    # 4) Mean-Reversion-Potenzial bis zur EMA50 (max. 15 Punkte)
+    # 4) Mean-Reversion-Potenzial bis zur EMA50 (max. 20 Punkte - erhöht,
+    #    da staerkste nachgewiesene Einzelkorrelation, 0.090)
     ema50_upside_pct = (
         max(0.0, ((ema50_heute - c_today) / c_today) * 100) if c_today else 0.0
     )
-    ema50_score = min(15.0, ema50_upside_pct * 1.2)
+    ema50_score = min(20.0, ema50_upside_pct * 1.6)
 
-    # 5) Kursrückgang-Tiefe vor dem Signal (max. 35 Punkte - staerkste
-    #    Einzelkomponente laut Backtest, ersetzt den wirkungslosen
-    #    Turnaround-Score). Rueckgang vom 20-Tage-Hoch, linear bis zum
-    #    Cap bei ca. -29 % (deckt sich mit dem staerksten Backtest-Bucket).
-    drawdown_magnitude = max(0.0, -drawdown_20t_pct)  # positive Groesse
-    drawdown_score = min(35.0, drawdown_magnitude * 1.2)
+    # 5) Kursrückgang-Tiefe vor dem Signal (max. 30 Punkte - jetzt ATR-
+    #    normalisiert statt roher Prozentwert. Ein Test zeigte: der rohe
+    #    Prozentwert war stark sektor-/volatilitaetsverzerrt (rohe -30%-
+    #    Rueckgaenge kommen fast nur bei volatilen Sektoren vor) - nach
+    #    ATR-Normierung bleibt ein echter, aber deutlich schwaecherer
+    #    Effekt (Korrelation 0.015 statt der aufgeblaehten 0.078 roh),
+    #    deshalb auch das Gewicht von 35 auf 30 gesenkt zugunsten von
+    #    EMA50-Potenzial oben. Cap bei 6 ATR (deckt sich mit dem Punkt,
+    #    an dem der Effekt bei den meisten Sektoren saettigt/kippt).
+    drawdown_magnitude = max(0.0, drawdown_atr_multiple)
+    drawdown_score = min(30.0, drawdown_magnitude * 5.0)
 
-    basis_score = rsi_score + trend_score + gd200_score + ema50_score  # max. 65
+    basis_score = rsi_score + trend_score + gd200_score + ema50_score  # max. 70
     dip_score_roh = basis_score + drawdown_score  # max. 100
 
     # 6) Marktregime-Filter
@@ -177,19 +220,32 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
 
 def signal_stufe(
     dip_score: float,
+    sektor: str = None,
     soft_schwelle: float = SOFT_KAUFSIGNAL_SCHWELLE,
     voll_schwelle: float = KAUFSIGNAL_SCHWELLE,
 ) -> str:
-    """Klassifiziert einen Dip Score in eine von drei Signalstufen, auf
-    Basis des Backtests (Schwellen-Sweep mit der aktuellen Formel):
-    - 'voll'  (Score >= 70): statistisches Ziel ~10%+, quote_10pct ~63%
-    - 'soft'  (Score 60-69): statistisches Ziel ~5%+, quote_5pct ~80%
-    - 'kein'  (Score < 60): kein Kaufsignal
+    """Klassifiziert einen Dip Score in eine von drei Signalstufen.
 
-    Wird sowohl in app.py (Watchlist-Anzeige) als auch potenziell im
-    Backtest fuer stufenspezifische Auswertungen genutzt."""
-    if dip_score >= voll_schwelle:
+    `sektor` ist optional: falls angegeben, wird ein sektor-spezifischer
+    Aufschlag aus SEKTOR_SCHWELLEN_AUFSCHLAG addiert (aktuell leer/neutral
+    fuer alle Sektoren - wird erst nach dem Re-Backtest mit der neuen
+    ATR-Formel mit echten Werten befuellt, siehe Chat: Gesundheit/
+    Konsumgueter zeigten selbst bei fairer ATR-Messung schwaechere
+    Zielrenditen-Quoten als z.B. Verteidigung/Cloud/Halbleiter).
+    Ohne `sektor` (Standard) verhaelt sich die Funktion wie bisher."""
+    aufschlag = SEKTOR_SCHWELLEN_AUFSCHLAG.get(sektor, 0.0) if sektor else 0.0
+    effektive_voll = voll_schwelle + aufschlag
+    effektive_soft = soft_schwelle + aufschlag
+    if dip_score >= effektive_voll:
         return "voll"
-    elif dip_score >= soft_schwelle:
+    elif dip_score >= effektive_soft:
         return "soft"
     return "kein"
+
+
+def effektive_schwelle(sektor: str = None, basis_schwelle: float = KAUFSIGNAL_SCHWELLE) -> float:
+    """Liefert die fuer einen Sektor tatsaechlich geltende Kaufsignal-
+    Schwelle (Basis-Schwelle + evtl. sektor-spezifischer Aufschlag).
+    Nuetzlich fuer die Anzeige ('aktueller Score / benoetigte Punkte')."""
+    aufschlag = SEKTOR_SCHWELLEN_AUFSCHLAG.get(sektor, 0.0) if sektor else 0.0
+    return basis_schwelle + aufschlag
