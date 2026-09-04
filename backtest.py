@@ -418,6 +418,15 @@ def analysiere_etf(isin, ticker, sektor, regime_serie):
             round(float(vol_wert), 3) if pd.notna(vol_wert) and vol_wert != float("inf") else None
         )
 
+        # --- DIAGNOSE 3: Trend-/GD200-Komponenten einzeln (ChatGPT-Punkt:
+        #     beide zeigten leicht negative Korrelation mit der Rendite,
+        #     nie isoliert nachgeprueft). Beide direkt aus score_result
+        #     ableitbar, keine Aenderung an dip_score.py noetig. ---
+        zeile["ema50_ueber_gd200"] = score_result["ema50"] > score_result["gd200"]
+        zeile["gd200_puffer_pct"] = round(
+            ((score_result["close"] - score_result["gd200"]) / score_result["gd200"]) * 100, 2
+        ) if score_result["gd200"] else 0.0
+
         zeile.update(ziele_erreicht_multi(high, close, i))
 
         ergebnisse.append(zeile)
@@ -655,6 +664,51 @@ def volumen_bin_analyse(df, bins=VOLUMEN_BINS):
     return pd.DataFrame(zeilen)
 
 
+def trend_kreuz_analyse(df):
+    """EINZELFAKTOR 4: Die zwei Teilbedingungen des Trend-Scores (EMA50 >
+    GD200, GD200 steigt) einzeln UND gekreuzt betrachten - beide zeigten in
+    der Gesamt-Korrelation ein leicht negatives Vorzeichen (-0.027), nie
+    isoliert nachgeprueft. Testet, ob eine der beiden Bedingungen (oder
+    ihre Kombination) fuer den Effekt verantwortlich ist."""
+    zeilen = []
+    for ema_ueber in [True, False]:
+        for steigt in [True, False]:
+            maske = (
+                (df["ema50_ueber_gd200"] == ema_ueber)
+                & (df["gd200_steigt"] == steigt)
+            )
+            episoden = episoden_aus_maske(df, maske)
+            valide = episoden.dropna(subset=[f"return_{HAUPT_VORSCHAU}t"])
+            zeile = {
+                "ema50>gd200": ema_ueber,
+                "gd200_steigt": steigt,
+            }
+            zeile.update(_episoden_kennzahlen(valide))
+            zeilen.append(zeile)
+    return pd.DataFrame(zeilen)
+
+
+GD200_PUFFER_BINS = [(-100, -5), (-5, 0), (0, 2), (2, 5), (5, 10), (10, 20), (20, 1000)]
+
+
+def gd200_puffer_bin_analyse(df, bins=GD200_PUFFER_BINS):
+    """EINZELFAKTOR 5: GD200-Puffer (Kurs relativ zur GD200) in feinen
+    Stufen statt nur als gedeckelten Score - testet, ob ein GROSSER Puffer
+    (weit ueber der GD200) tatsaechlich ein Sicherheitsmerkmal ist (wie
+    aktuell im Score angenommen) oder eher "bereits weit gelaufen, ueberkauft
+    auf laengerer Sicht" bedeutet, was die leicht negative Korrelation
+    (-0.032) erklaeren wuerde."""
+    zeilen = []
+    for lo, hi in bins:
+        maske = (df["gd200_puffer_pct"] >= lo) & (df["gd200_puffer_pct"] < hi)
+        episoden = episoden_aus_maske(df, maske)
+        valide = episoden.dropna(subset=[f"return_{HAUPT_VORSCHAU}t"])
+        zeile = {"gd200_puffer_bereich_pct": f"{lo} bis {hi}"}
+        zeile.update(_episoden_kennzahlen(valide))
+        zeilen.append(zeile)
+    return pd.DataFrame(zeilen)
+
+
 def jahres_robustheit(df, schwelle=KAUFSIGNAL_SCHWELLE):
     """EINZELFAKTOR 3: Traegt das Signal bei der AKTUELLEN Kaufsignal-
     Schwelle ueber mehrere Jahre, oder kommt die Performance nur aus
@@ -687,6 +741,12 @@ def einzelfaktor_analysen(df):
 
     print("\n--- 2c) Handelsvolumen relativ zum 20-Tage-Schnitt (Kapitulations-Test) ---")
     print(volumen_bin_analyse(df).to_string(index=False))
+
+    print("\n--- 2d) Trend-Teilbedingungen gekreuzt (EMA50>GD200 x GD200 steigt) ---")
+    print(trend_kreuz_analyse(df).to_string(index=False))
+
+    print("\n--- 2e) GD200-Puffer in feinen Stufen (Sicherheitsmerkmal oder ueberkauft?) ---")
+    print(gd200_puffer_bin_analyse(df).to_string(index=False))
 
     print(f"\n--- 3) Jahres-Robustheit bei Schwelle {KAUFSIGNAL_SCHWELLE:.0f} ---")
     print(jahres_robustheit(df).to_string(index=False))
@@ -954,12 +1014,13 @@ def main():
 
     alle_ergebnisse = []
     serien_cache = {}
-    for item in etfs:
+    gesamt_anzahl = len(etfs)
+    for idx, item in enumerate(etfs, start=1):
         ticker = item.get("ticker")
         if not ticker:
-            print(f"  Uebersprungen (kein Ticker in {ISIN_DATEI}): {item['isin']}")
+            print(f"  [{idx}/{gesamt_anzahl}] Uebersprungen (kein Ticker in {ISIN_DATEI}): {item['isin']}")
             continue
-        print(f"  Backteste {ticker} ({item['isin']})...")
+        print(f"  [{idx}/{gesamt_anzahl}] Backteste {ticker} ({item['isin']})...")
         ergebnisse, serien = analysiere_etf(item["isin"], ticker, item["sektor"], regime_serie)
         alle_ergebnisse.extend(ergebnisse)
         if serien is not None:
@@ -1025,8 +1086,8 @@ def main():
 
     print("\n\n--- ZUSATZVALIDIERUNG: etablierte, langjaehrige Sektor-ETFs (USD) ---")
     zusatz_ergebnisse = []
-    for ticker in ZUSATZVALIDIERUNG_TICKER:
-        print(f"  Backteste {ticker}...")
+    for idx, ticker in enumerate(ZUSATZVALIDIERUNG_TICKER, start=1):
+        print(f"  [{idx}/{len(ZUSATZVALIDIERUNG_TICKER)}] Backteste {ticker}...")
         ergebnisse, _ = analysiere_etf(ticker, ticker, "Zusatzvalidierung", regime_serie)
         zusatz_ergebnisse.extend(ergebnisse)
         time.sleep(API_PAUSE_SEKUNDEN)
