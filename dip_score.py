@@ -33,17 +33,16 @@ import pandas as pd
 # KONFIGURATION (identisch zu app.py - dort werden dieselben Werte
 # verwendet; falls in app.py angepasst, hier synchron halten)
 # ==========================================
-KAUFSIGNAL_SCHWELLE = 71.0        # "volles" Kaufsignal - PLATZHALTER bis zum Re-Backtest
-                                   # mit der neuen ATR-Formel (auf 71 statt 70 gesetzt,
-                                   # da Basis-Komponenten jetzt max. 70 erreichen -
-                                   # ohne diesen Puffer waere ein Signal auch ganz
-                                   # ohne jeglichen Rueckgang moeglich)
-SOFT_KAUFSIGNAL_SCHWELLE = 60.0   # "softes" Kaufsignal - Backtest-Ziel ~5%+
-ZIEL_RENDITE_SOFT_PCT = 4.0       # Exit-Ziel für softes Signal - Backtest-optimiert
-                                   # (schlägt EMA50-Regel in Rendite/Tag: 0.32 vs 0.13 %/Tag)
-ZIEL_RENDITE_VOLL_PCT = 7.0       # Exit-Ziel für volles Signal - Backtest-optimiert
-                                   # (schlägt EMA50-Regel auch absolut: +3.58% vs +3.27%,
-                                   # bei weniger als halber Haltedauer)
+KAUFSIGNAL_SCHWELLE = 75.0        # "volles" Kaufsignal - Re-Backtest nach ATR-Umbau:
+                                   # quote_10pct 41,7% bei 70 -> 51,9% bei 75 (212 Ep./39 Cluster),
+                                   # löst nebenbei auch die Gesundheit-Sektor-Frage strukturell
+                                   # (Gesundheit fällt bei 75 unter n=10, filtert sich von selbst raus)
+SOFT_KAUFSIGNAL_SCHWELLE = 65.0   # "softes" Kaufsignal - mit angehoben, um sinnvollen Abstand
+                                   # zur neuen KAUFSIGNAL_SCHWELLE (75) zu halten
+ZIEL_RENDITE_SOFT_PCT = 4.0       # Exit-Ziel für softes Signal - VOR der Schwellen-Anhebung
+                                   # kalibriert, nach Re-Backtest mit den neuen Schwellen
+                                   # nochmal zu pruefen (siehe Chat)
+ZIEL_RENDITE_VOLL_PCT = 7.0       # Exit-Ziel für volles Signal - dito, noch zu validieren
 RSI_WATCHLIST_SCHWELLE = 40.0
 REGIME_MALUS_FAKTOR = 0.8
 MARKT_BENCHMARK_TICKER = "URTH"  # Breiter Referenzindex (iShares MSCI World). Alternative: "^STOXX" (Europa)
