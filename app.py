@@ -13,6 +13,7 @@ from dip_score import (
     berechne_indikator_serien,
     score_am_punkt,
     signal_stufe,
+    effektive_schwelle,
     KAUFSIGNAL_SCHWELLE,
     SOFT_KAUFSIGNAL_SCHWELLE,
     ZIEL_RENDITE_SOFT_PCT,
@@ -542,7 +543,8 @@ if "watchlist_signale" not in st.session_state:
             rsi35_abstand = ((rsi35 - c) / c) * 100
             etf_name = hole_etf_name(ticker)
 
-            stufe = signal_stufe(dip_score)
+            stufe = signal_stufe(dip_score, sektor=item["sektor"])
+            noetige_punkte = effektive_schwelle(item["sektor"])
             ist_kaufsignal = stufe == "voll"
             ist_soft_signal = stufe == "soft"
             ist_in_portfolio = item["isin"] in portfolio_isins
@@ -570,6 +572,7 @@ if "watchlist_signale" not in st.session_state:
                 "EMA50": ema50,
                 "EMA50_Score": ema50_score,
                 "Dip Score": dip_score,
+                "Noetige_Punkte": noetige_punkte,
                 "Drawdown Score": drawdown_score,
                 "Drawdown_20t_Pct": drawdown_20t_pct,
                 "GD200_Bruch_Malus": gd200_bruch_malus,
@@ -714,7 +717,9 @@ with tab1:
                 return f"{praefix}{name}"
 
         display_df = pd.DataFrame()
-        display_df["Dip Score"] = df_watch["Dip Score"].map(lambda x: f"{x:.1f}")
+        display_df["Dip Score"] = df_watch.apply(
+            lambda r: f"{r['Dip Score']:.1f}/{r['Noetige_Punkte']:.0f}", axis=1
+        )
         display_df["Name"] = [
             format_name_rank(df_watch.iloc[i]) for i in range(len(df_watch))
         ]
@@ -935,6 +940,12 @@ with tab2:
                     continue
 
                 current_price = data["live_close"]
+                if current_price is None or pd.isna(current_price):
+                    fehler_liste.append(
+                        f"{pos.get('name', pos.get('isin', '?'))} (Kursdaten unvollständig/NaN)"
+                    )
+                    continue
+
                 buy_price = float(pos["buy_price"])
                 shares = float(pos.get("shares", 0))
 
@@ -946,13 +957,14 @@ with tab2:
                 # Signalstufe: manuelle Zuordnung oben ist für die dort
                 # gelisteten ISINs bindend > sonst portfolio.py ('signal_stufe')
                 # > gespeicherter Score ('dip_score_bei_kauf') > unbekannt.
+                pos_sektor = pos.get("sektor") or sektor_lookup.get(pos["isin"], "-")
                 stufe = manuelle_stufe
                 if stufe not in ("soft", "voll"):
                     stufe = pos.get("signal_stufe")
                 if stufe not in ("soft", "voll"):
                     gespeicherter_score = pos.get("dip_score_bei_kauf")
                     stufe = (
-                        signal_stufe(float(gespeicherter_score))
+                        signal_stufe(float(gespeicherter_score), sektor=pos_sektor)
                         if gespeicherter_score is not None
                         else None
                     )
@@ -990,7 +1002,7 @@ with tab2:
                 portfolio_zeilen.append({
                     "Name": pos.get("name", ticker_used),
                     "ISIN": pos["isin"],
-                    "Sektor": pos.get("sektor") or sektor_lookup.get(pos["isin"], "-"),
+                    "Sektor": pos_sektor,
                     "Ticker": ticker_used,
                     "Kurs": current_price,
                     "Kaufkurs": buy_price,
