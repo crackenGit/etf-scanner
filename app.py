@@ -419,6 +419,113 @@ with st.expander("📊 Wie wird das Verkaufsziel gesetzt? (Regelwerk)", expanded
         "`'voll'` (oder ersatzweise `'dip_score_bei_kauf'`) in `portfolio.py` haben."
     )
 
+with st.expander("📈 Backtest-Erkenntnisse zum Nachlesen (Statistik)", expanded=False):
+    st.caption(
+        "Alle Zahlen aus dem eigenen Backtest (`backtest.py`), 277.000+ ETF-Tage, "
+        "~18 Jahre Historie, Stand nach der ATR-Formel-Umstellung. **Cluster** = "
+        "unabhängige Marktereignisse (zeitlich nah beieinanderliegende Signale "
+        "über alle Ticker hinweg zählen als 1) - die eigentlich verlässliche "
+        "Stichprobengröße, nicht die rohe Episoden-Zahl. Unter ~15-20 Clustern "
+        "sind Zahlen eher eine Tendenz als ein Beweis."
+    )
+
+    st.markdown(f"""
+    ##### 1) Warum die Schwellen {SOFT_KAUFSIGNAL_SCHWELLE:.0f} / {KAUFSIGNAL_SCHWELLE:.0f}?
+    | Schwelle | Episoden/Cluster | Chance auf +5% | Chance auf +10% |
+    |---|---|---|---|
+    | 65 | 1.283/122 | 67,0% | 35,3% |
+    | 70 | 545/83 | 75,0% | 41,7% |
+    | **75 (voll)** | 212/39 | 76,9% | **51,9%** |
+    | 80 | 88/21 | 78,4% | 50,0% |
+    | 85 | 28/10 | 85,7% (dünn) | 53,6% (dünn) |
+
+    75 bietet den besten Kompromiss aus Stichprobengröße und Trefferqualität -
+    darüber wird die Stichprobe schnell zu dünn.
+    """)
+
+    st.markdown("""
+    ##### 2) RSI-Sweet-Spot bei 25 (nicht "je tiefer desto besser")
+    | RSI-Bereich | Trefferquote | Chance auf +10% |
+    |---|---|---|
+    | 0-20 | 56,9% | 37,6% |
+    | **20-25** | 62,8% | **42,5%** |
+    | 25-30 | 63,7% | 41,2% |
+    | 30-35 | 63,3% | 37,0% |
+    | 35-40 | 61,7% | 32,0% |
+
+    RSI unter 20 performt schlechter, nicht besser - vermutlich eher
+    Crash- als Dip-Signal.
+    """)
+
+    st.markdown("""
+    ##### 3) Kursrückgang-Tiefe (roh, vor ATR-Normierung)
+    | Rückgang | Trefferquote | Chance auf +10% |
+    |---|---|---|
+    | -30% und tiefer | 73,6% | 79,8% |
+    | -20% bis -30% | 67,6% | 71,6% |
+    | -10% bis -20% | 60,6% | 50,4% |
+    | -5% bis -10% | 60,7% | 35,0% |
+    | 0% bis -5% | 59,8% | 23,4% |
+
+    Klar monoton - tieferer Rückgang = bessere Erholungschance. **ATR-normalisiert**
+    (volatilitätsbereinigt) bleibt derselbe Effekt bestehen, aber deutlich
+    schwächer (21,7% → 28,4% statt 23,4% → 79,8%) - ein großer Teil des rohen
+    Effekts war Sektor-Bias (volatile Sektoren wie Halbleiter fielen öfter tief
+    UND liefen in diesem Zeitraum ohnehin besser). Der Score nutzt deshalb die
+    ATR-Version, nicht die rohe.
+    """)
+
+    st.markdown(f"""
+    ##### 4) Exit-Ziele: feste Prozentrendite schlägt die alte EMA50-Regel
+    | Signal | Alte EMA50-Regel | Festes Ziel (aktuell) |
+    |---|---|---|
+    | Soft ({SOFT_KAUFSIGNAL_SCHWELLE:.0f}-{KAUFSIGNAL_SCHWELLE-1:.0f}) | +1,99% in 25,4 Tagen | **+{ZIEL_RENDITE_SOFT_PCT:.0f}%-Ziel: 74,7% Erreichquote in 10,0 Tagen** |
+    | Voll (≥{KAUFSIGNAL_SCHWELLE:.0f}) | +2,58% in 30,7 Tagen | **+{ZIEL_RENDITE_VOLL_PCT:.0f}%-Ziel: 66,5% Erreichquote in 13,4 Tagen** |
+
+    Feste Ziele sind sowohl schneller als auch effizienter (Rendite/Tag) als
+    die frühere Tranchenlogik.
+    """)
+
+    st.markdown("""
+    ##### 5) Renditeprofil nach Haltedauer (unabhängig von jeder Exit-Regel)
+    """)
+    col_rp1, col_rp2 = st.columns(2)
+    with col_rp1:
+        st.markdown("""
+        **Softes Signal** (1.374 Episoden / 117 Cluster)
+        | Tag | Ø Rendite | Trefferquote |
+        |---|---|---|
+        | 1 | +0,21% | 55,5% |
+        | 5 | +0,65% | 62,1% |
+        | 10 | +0,95% | 65,9% |
+        | 21 | +2,06% | 67,9% |
+        | 40 | +3,30% | 68,0% |
+        """)
+    with col_rp2:
+        st.markdown("""
+        **Volles Signal** (212 Episoden / 39 Cluster)
+        | Tag | Ø Rendite | Trefferquote |
+        |---|---|---|
+        | 1 | +0,25% | 57,5% |
+        | 5 | +1,88% | 70,3% |
+        | 10 | +2,12% | 75,0% |
+        | 21 | +2,60% | 67,0% |
+        | 40 | +4,49% | 69,1% |
+        """)
+
+    st.markdown("""
+    ##### 6) Jahres-Robustheit
+    Trägt über die meisten Jahre der Historie (2009-2026), mit einer klaren
+    Ausnahme: **2025 war das schwächste Jahr** (13,2% Trefferquote bei Schwelle
+    75, n=38/5 Cluster) - kein Ausschlusskriterium, aber ein Hinweis, dass die
+    Strategie nicht in jeder Marktphase gleich gut funktioniert.
+    """)
+
+    st.caption(
+        "⚠️ Diese Zahlen sind ein Stand vom letzten Backtest-Lauf, kein Live-Update - "
+        "nach der nächsten Formel-/Schwellen-Anpassung hier manuell nachziehen."
+    )
+
 if "letztes_update" in st.session_state:
     st.caption(
         f"⏱️ **Letzter allgemeiner Scan-Stand:**"
@@ -806,16 +913,6 @@ with tab1:
 
                 if row_raw.get("Ist_Portfolio", False):
                     color = "background-color: #e8daef; color: #111111;"
-                elif row_raw["Ist_Kaufsignal"]:
-                    color = (
-                        "background-color: #d4edda; color: #155724;"
-                        " font-weight: bold;"
-                    )
-                elif row_raw.get("Ist_Soft_Signal", False):
-                    color = (
-                        "background-color: #fff3cd; color: #856404;"
-                        " font-weight: bold;"
-                    )
                 else:
                     color = ""
 
