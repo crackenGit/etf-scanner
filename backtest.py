@@ -355,6 +355,27 @@ def analysiere_etf(isin, ticker, sektor, regime_serie):
     indikatoren = berechne_indikator_serien(close, high, low)
     high_252 = high.rolling(window=252, min_periods=1).max()
     hoch_10t = close.rolling(window=10, min_periods=1).max()
+    hoch_20t = close.rolling(window=20, min_periods=1).max()
+
+    # --- DIAGNOSE 1: ATR-normalisierter Rueckgang (nicht im Live-Score,
+    #     nur zum Testen, ob die rohe Prozent-Tiefe Sektor-verzerrt ist) ---
+    prev_close = close.shift(1)
+    true_range = pd.concat([
+        (high - low),
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    atr14 = true_range.rolling(window=14).mean()
+    drawdown_abs_20t = hoch_20t - close  # positiver Wert = so weit unter dem 20T-Hoch
+    drawdown_atr_multiple = drawdown_abs_20t / atr14
+
+    # --- DIAGNOSE 2: Volumen-Verhaeltnis (Tagesvolumen / 20T-Schnitt) ---
+    if "Volume" in df.columns:
+        volume = df["Volume"].reindex(close.index)
+        volume_avg_20t = volume.rolling(window=20, min_periods=5).mean()
+        volumen_ratio = volume / volume_avg_20t
+    else:
+        volumen_ratio = pd.Series(float("nan"), index=close.index)
 
     ergebnisse = []
     start_i = 199  # erster Index mit vollstaendigem GD200 (0-indexiert)
@@ -387,6 +408,16 @@ def analysiere_etf(isin, ticker, sektor, regime_serie):
         zeile["drawdown_10t_vor_signal_pct"] = round(
             ((close.iloc[i] - hoch_10t.iloc[i]) / hoch_10t.iloc[i]) * 100, 2
         )
+
+        atr_wert = drawdown_atr_multiple.iloc[i]
+        zeile["drawdown_atr_multiple"] = (
+            round(float(atr_wert), 3) if pd.notna(atr_wert) and atr_wert != float("inf") else None
+        )
+        vol_wert = volumen_ratio.iloc[i]
+        zeile["volumen_ratio"] = (
+            round(float(vol_wert), 3) if pd.notna(vol_wert) and vol_wert != float("inf") else None
+        )
+
         zeile.update(ziele_erreicht_multi(high, close, i))
 
         ergebnisse.append(zeile)
@@ -536,6 +567,8 @@ def schwellen_sweep(df, schwellen=SCHWELLEN_SWEEP_BEREICH):
 
 RSI_BINS = [(0, 20), (20, 25), (25, 30), (30, 35), (35, 40)]
 DRAWDOWN_BINS = [(-100, -30), (-30, -20), (-20, -10), (-10, -5), (-5, 0)]
+DRAWDOWN_ATR_BINS = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 100)]
+VOLUMEN_BINS = [(0, 0.8), (0.8, 1.2), (1.2, 1.5), (1.5, 2.0), (2.0, 100)]
 
 
 def _episoden_kennzahlen(valide, rendite_spalte=f"return_{HAUPT_VORSCHAU}t"):
@@ -592,6 +625,36 @@ def drawdown_bin_analyse(df, spalte="drawdown_20t_pct", bins=DRAWDOWN_BINS):
     return pd.DataFrame(zeilen)
 
 
+def drawdown_atr_bin_analyse(df, bins=DRAWDOWN_ATR_BINS):
+    """EINZELFAKTOR 2b: ATR-normalisierter Rueckgang - Diagnose, ob die
+    rohe Prozent-Tiefe (Einzelfaktor 2) teilweise nur einen Sektor-/
+    Volatilitaets-Bias abbildet. Nicht Teil des Live-Scores, nur Test."""
+    zeilen = []
+    for lo, hi in bins:
+        maske = (df["drawdown_atr_multiple"] >= lo) & (df["drawdown_atr_multiple"] < hi)
+        episoden = episoden_aus_maske(df, maske)
+        valide = episoden.dropna(subset=[f"return_{HAUPT_VORSCHAU}t"])
+        zeile = {"atr_vielfaches": f"{lo}-{hi}"}
+        zeile.update(_episoden_kennzahlen(valide))
+        zeilen.append(zeile)
+    return pd.DataFrame(zeilen)
+
+
+def volumen_bin_analyse(df, bins=VOLUMEN_BINS):
+    """EINZELFAKTOR 2c: Handelsvolumen am Signaltag relativ zum 20-Tage-
+    Schnitt - testet die Kapitulations-Hypothese (hohes Volumen beim Dip
+    = bessere Rebound-Chance). Bislang komplett ungetestet."""
+    zeilen = []
+    for lo, hi in bins:
+        maske = (df["volumen_ratio"] >= lo) & (df["volumen_ratio"] < hi)
+        episoden = episoden_aus_maske(df, maske)
+        valide = episoden.dropna(subset=[f"return_{HAUPT_VORSCHAU}t"])
+        zeile = {"volumen_vielfaches": f"{lo}-{hi}"}
+        zeile.update(_episoden_kennzahlen(valide))
+        zeilen.append(zeile)
+    return pd.DataFrame(zeilen)
+
+
 def jahres_robustheit(df, schwelle=KAUFSIGNAL_SCHWELLE):
     """EINZELFAKTOR 3: Traegt das Signal bei der AKTUELLEN Kaufsignal-
     Schwelle ueber mehrere Jahre, oder kommt die Performance nur aus
@@ -616,8 +679,14 @@ def einzelfaktor_analysen(df):
     print("\n--- 1) RSI-Bereich isoliert ---")
     print(rsi_bin_analyse(df).to_string(index=False))
 
-    print("\n--- 2) Kursrueckgang vor dem Tag (20-Tage-Hoch bis heute) ---")
+    print("\n--- 2) Kursrueckgang vor dem Tag (20-Tage-Hoch bis heute, Prozent) ---")
     print(drawdown_bin_analyse(df).to_string(index=False))
+
+    print("\n--- 2b) Kursrueckgang ATR-normalisiert (Diagnose: Sektor-Bias?) ---")
+    print(drawdown_atr_bin_analyse(df).to_string(index=False))
+
+    print("\n--- 2c) Handelsvolumen relativ zum 20-Tage-Schnitt (Kapitulations-Test) ---")
+    print(volumen_bin_analyse(df).to_string(index=False))
 
     print(f"\n--- 3) Jahres-Robustheit bei Schwelle {KAUFSIGNAL_SCHWELLE:.0f} ---")
     print(jahres_robustheit(df).to_string(index=False))
@@ -679,6 +748,62 @@ def _episode_index(serien_cache, ep):
     if isinstance(i, slice) or hasattr(i, "__len__"):
         return None, None
     return serien, i
+
+
+RENDITE_PROFIL_TAGE = [1, 3, 5, 7, 10, 15, 21, 30, 40]
+
+
+def rendite_kurve_tage(close, i, tage_liste=RENDITE_PROFIL_TAGE):
+    """Rendite ab Tag i (Index-Position) fuer eine feste Liste von
+    Haltedauern (z.B. 1/3/5/7/10/15/21/30/40 Tage) - Basis fuer das
+    Renditeprofil nach Signalstufe."""
+    ergebnis = {}
+    for tag in tage_liste:
+        idx = i + tag
+        if idx >= len(close):
+            ergebnis[f"rendite_tag{tag}"] = None
+            continue
+        rendite = ((close.iloc[idx] - close.iloc[i]) / close.iloc[i]) * 100
+        ergebnis[f"rendite_tag{tag}"] = round(rendite, 2)
+    return ergebnis
+
+
+def renditeprofil_nach_tagen(df, serien_cache, tier, tage_liste=RENDITE_PROFIL_TAGE):
+    """Fuer eine Signalstufe (soft/voll): Ø Rendite, Median und
+    Trefferquote nach 1 Tag, 3 Tagen, ..., 40 Tagen - beantwortet direkt
+    'welche Rendite ist bei diesem Signal nach welchem Zeitraum im
+    Schnitt zu erwarten'. Gedacht als Datengrundlage fuer die
+    aufklappbare Backtest-Erkenntnisse-Box in app.py."""
+    episoden = episoden_tier(df, tier)
+    zeilen_pro_episode = []
+    for _, ep in episoden.iterrows():
+        serien, i = _episode_index(serien_cache, ep)
+        if serien is None:
+            continue
+        zeilen_pro_episode.append(rendite_kurve_tage(serien["close"], i, tage_liste))
+
+    if not zeilen_pro_episode:
+        return pd.DataFrame(columns=["tag", "anzahl", "avg_rendite_pct", "median_rendite_pct", "trefferquote_pct"])
+
+    profil_df = pd.DataFrame(zeilen_pro_episode)
+    zeilen = []
+    for tag in tage_liste:
+        spalte = f"rendite_tag{tag}"
+        if spalte not in profil_df.columns:
+            continue
+        werte = profil_df[spalte].dropna()
+        if len(werte) == 0:
+            zeilen.append({"tag": tag, "anzahl": 0, "avg_rendite_pct": None,
+                            "median_rendite_pct": None, "trefferquote_pct": None})
+            continue
+        zeilen.append({
+            "tag": tag,
+            "anzahl": len(werte),
+            "avg_rendite_pct": round(werte.mean(), 2),
+            "median_rendite_pct": round(werte.median(), 2),
+            "trefferquote_pct": round((werte > 0).mean() * 100, 1),
+        })
+    return pd.DataFrame(zeilen)
 
 
 def ziel_exit_sweep(df, serien_cache, tier, ziel_kandidaten):
@@ -760,6 +885,11 @@ def exit_regel_vergleich(df, serien_cache):
         print(f"\n  Feste Zielrenditen im Vergleich:")
         sweep = ziel_exit_sweep(df, serien_cache, tier, ziel_kandidaten[tier])
         print(sweep.to_string(index=False))
+
+        print(f"\n  Renditeprofil nach Haltedauer (unabhängig von jeder Exit-Regel -")
+        print(f"  einfach 'was ist nach X Tagen im Schnitt drin'):")
+        profil = renditeprofil_nach_tagen(df, serien_cache, tier)
+        print(profil.to_string(index=False))
 
     print("\n  Hinweis: 'geclusterte_rendite_pct' ist die robustere Zahl bei")
     print("  zeitlich gehaeuften Signalen (siehe Schwellen-Sweep-Hinweis oben).")
