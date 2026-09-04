@@ -667,7 +667,7 @@ with tab1:
                     "🎯 Abstand zu RSI 35 Zielkurs",
                     "📊 Nähe zu GD200-Unterstützung",
                 ],
-                index=1,
+                index=0,
             )
 
         df_watch = pd.DataFrame(watch)
@@ -714,6 +714,7 @@ with tab1:
                 return f"{praefix}{name}"
 
         display_df = pd.DataFrame()
+        display_df["Dip Score"] = df_watch["Dip Score"].map(lambda x: f"{x:.1f}")
         display_df["Name"] = [
             format_name_rank(df_watch.iloc[i]) for i in range(len(df_watch))
         ]
@@ -779,8 +780,6 @@ with tab1:
         display_df["Bruch-Malus"] = df_watch["GD200_Bruch_Malus"].map(
             lambda x: f"×{x:.2f}"
         )
-
-        display_df["Dip Score"] = df_watch["Dip Score"].map(lambda x: f"{x:.1f}")
 
         def signal_label(row):
             if row["Ist_Kaufsignal"]:
@@ -935,7 +934,7 @@ with tab2:
                     fehler_liste.append(f"{pos.get('name', pos.get('isin', '?'))} (keine Kursdaten)")
                     continue
 
-                current_price = data["close"]
+                current_price = data["live_close"]
                 buy_price = float(pos["buy_price"])
                 shares = float(pos.get("shares", 0))
 
