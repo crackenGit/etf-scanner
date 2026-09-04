@@ -322,6 +322,7 @@ def berechne_indikatoren(isin, ticker=None):
         "drawdown_score": score_ergebnis["drawdown_score"],
         "gd200_bruch_malus_faktor": score_ergebnis["gd200_bruch_malus_faktor"],
         "drawdown_20t_pct": score_ergebnis["drawdown_20t_pct"],
+        "drawdown_atr_multiple": score_ergebnis["drawdown_atr_multiple"],
         "regime_ok": regime_ok,
         "yahoo_zeit": yahoo_zeit,
         "return_serie": close.pct_change().dropna().tail(180),
