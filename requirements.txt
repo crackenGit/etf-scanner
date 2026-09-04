@@ -4,3 +4,5 @@ yfinance>=0.2.40
 pandas
 lxml
 requests
+gspread
+google-auth
