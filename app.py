@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 import logging
 import warnings
 import re
+import traceback
 import pandas as pd
 import requests
 import streamlit as st
@@ -376,7 +377,8 @@ def hole_signal_sheet():
         st.session_state["signal_log_fehler"] = None
         return sheet
     except Exception as e:
-        st.session_state["signal_log_fehler"] = f"{type(e).__name__}: {e}"
+        st.session_state["signal_log_fehler"] = f"{type(e).__name__}: {e!r}"
+        st.session_state["signal_log_traceback"] = traceback.format_exc()
         return None
 
 
@@ -394,6 +396,10 @@ def signal_log_status():
             f"Secrets pruefen (Settings -> Secrets) und danach **Reboot app** "
             f"(nicht nur Rerun) - siehe Chat."
         )
+        tb = st.session_state.get("signal_log_traceback")
+        if tb:
+            with st.expander("🔍 Vollständiger Fehler (für Diagnose)"):
+                st.code(tb, language="text")
 
 
 def logge_signale(df_watch):
@@ -450,7 +456,8 @@ def logge_signale(df_watch):
             f"{len(neue_zeilen)} neue Zeile(n) geloggt"
         )
     except Exception as e:
-        st.session_state["signal_log_fehler"] = f"{type(e).__name__}: {e}"
+        st.session_state["signal_log_fehler"] = f"{type(e).__name__}: {e!r}"
+        st.session_state["signal_log_traceback"] = traceback.format_exc()
 
 
 # ==========================================
