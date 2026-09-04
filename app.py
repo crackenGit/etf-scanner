@@ -356,8 +356,11 @@ SIGNAL_LOG_SPALTEN = [
 @st.cache_resource
 def hole_signal_sheet():
     """Verbindung zum Google Sheet fuer das Forward-Tracking-Log. Gibt None
-    zurueck, falls die Secrets fehlen oder die Verbindung fehlschlaegt -
-    die App laeuft dann einfach ohne Logging normal weiter."""
+    zurueck, falls die Secrets fehlen oder die Verbindung fehlschlaegt - die
+    App laeuft dann einfach ohne Logging normal weiter. Der Fehlergrund wird
+    zusaetzlich in st.session_state abgelegt, damit er in der UI sichtbar
+    gemacht werden kann (siehe signal_log_status()), statt still zu
+    verschwinden - Cache-Fehlschlaege sonst schwer zu diagnostizieren."""
     try:
         import gspread
         from google.oauth2.service_account import Credentials
@@ -370,9 +373,27 @@ def hole_signal_sheet():
         sheet = client.open_by_key(st.secrets["signal_log_sheet_id"]).sheet1
         if not sheet.get_all_values():
             sheet.append_row(SIGNAL_LOG_SPALTEN)
+        st.session_state["signal_log_fehler"] = None
         return sheet
-    except Exception:
+    except Exception as e:
+        st.session_state["signal_log_fehler"] = f"{type(e).__name__}: {e}"
         return None
+
+
+def signal_log_status():
+    """Kleine, sichtbare Diagnose fuer die Watchlist-Seite: laeuft das
+    Sheet-Logging gerade, und falls nicht, warum? Ruft hole_signal_sheet()
+    bewusst NICHT selbst auf (das passiert schon in logge_signale) -
+    liest nur das zuletzt abgelegte Ergebnis aus session_state."""
+    fehler = st.session_state.get("signal_log_fehler", "noch nicht versucht")
+    if fehler is None:
+        st.caption("✅ **Signal-Log:** aktiv (Google Sheet verbunden)")
+    else:
+        st.caption(
+            f"🔕 **Signal-Log:** inaktiv - {fehler}. "
+            f"Secrets pruefen (Settings -> Secrets) und danach **Reboot app** "
+            f"(nicht nur Rerun) - siehe Chat."
+        )
 
 
 def logge_signale(df_watch):
@@ -425,8 +446,11 @@ def logge_signale(df_watch):
 
         if neue_zeilen:
             sheet.append_rows(neue_zeilen)
-    except Exception:
-        pass
+        st.session_state["signal_log_letzter_lauf"] = (
+            f"{len(neue_zeilen)} neue Zeile(n) geloggt"
+        )
+    except Exception as e:
+        st.session_state["signal_log_fehler"] = f"{type(e).__name__}: {e}"
 
 
 # ==========================================
@@ -976,6 +1000,7 @@ with tab1:
         if "signale_geloggt" not in st.session_state:
             logge_signale(df_watch)
             st.session_state["signale_geloggt"] = True
+        signal_log_status()
 
         def format_name_rank(row):
             name = row["Name"]
