@@ -35,8 +35,11 @@ import yfinance as yf
 from dip_score import (
     berechne_indikator_serien,
     score_am_punkt,
+    signal_stufe,
     KAUFSIGNAL_SCHWELLE,
     SOFT_KAUFSIGNAL_SCHWELLE,
+    ZIEL_RENDITE_SOFT_PCT,
+    ZIEL_RENDITE_VOLL_PCT,
     MARKT_BENCHMARK_TICKER,
 )
 
@@ -334,6 +337,21 @@ def simuliere_prozent_ziel_exit(close, high, i, ziel_pct, max_tage=MAX_TAGE_EXIT
     }
 
 
+def rendite_bis_beliebiges_ziel(close, i, ziel_pct, max_tage=40):
+    """Wie ziele_erreicht_multi, aber fuer ein BELIEBIGES Ziel (z.B. die
+    tatsaechlichen 4%/7% aus ZIEL_RENDITE_SOFT_PCT/VOLL_PCT, die nicht
+    exakt in der festen Standard-Liste [2,3,5,7.5,10] enthalten sind).
+    Gibt (erreicht: bool, tage_bis_erreicht: int|None) zurueck."""
+    ziel_kurs = close.iloc[i] * (1 + ziel_pct / 100)
+    ende = min(i + max_tage + 1, len(close))
+    fenster = close.iloc[i + 1:ende]
+    treffer = fenster[fenster >= ziel_kurs]
+    if len(treffer) > 0:
+        tage = fenster.index.get_loc(treffer.index[0]) + 1
+        return True, int(tage)
+    return False, None
+
+
 def analysiere_etf(isin, ticker, sektor, regime_serie):
     """Laedt Kursdaten, berechnet die Score-/Forward-Return-Zeilen fuer
     JEDEN Tag (fuer Korrelation/Buckets/Schwellen-Sweep) UND gibt
@@ -426,6 +444,68 @@ def analysiere_etf(isin, ticker, sektor, regime_serie):
         zeile["gd200_puffer_pct"] = round(
             ((score_result["close"] - score_result["gd200"]) / score_result["gd200"]) * 100, 2
         ) if score_result["gd200"] else 0.0
+
+        # --- DIAGNOSE 4: Screening-Kandidaten fuer "was unterscheidet echte
+        #     Treffer von falschen Signalen" (siehe Chat) - bewusst als reine
+        #     Diagnose-Spalten, NICHT Teil des Scores. Alle direkt aus schon
+        #     geladenen Serien ableitbar, keine neuen Daten noetig. ---
+
+        # RSI-Geschwindigkeit: Rueckgang der letzten 3 Tage. Negativ = RSI
+        # faellt gerade (potenziell "im freien Fall" statt "sanft in den
+        # Sweet Spot gleitend").
+        if i >= 3:
+            zeile["rsi_geschwindigkeit_3t"] = round(
+                float(indikatoren["rsi"].iloc[i] - indikatoren["rsi"].iloc[i - 3]), 2
+            )
+        else:
+            zeile["rsi_geschwindigkeit_3t"] = None
+
+        # Volatilitaets-Trend: veraendert sich das ATR gerade (Panik nimmt
+        # zu) oder ist es stabil/fallend? Positiv = ATR steigt.
+        if i >= 5 and pd.notna(atr14.iloc[i - 5]) and atr14.iloc[i - 5] != 0:
+            zeile["atr_veraenderung_5t_pct"] = round(
+                float((atr14.iloc[i] - atr14.iloc[i - 5]) / atr14.iloc[i - 5]) * 100, 2
+            )
+        else:
+            zeile["atr_veraenderung_5t_pct"] = None
+
+        # Sprung vs. graduell: Anteil des staerksten Einzeltags-Rueckgangs
+        # am kumulierten 5-Tage-Rueckgang. Nahe 1 = ein einzelner grosser
+        # Sprung (z.B. Nachrichten-Gap) dominiert; deutlich <1 = gleichmaessig
+        # ueber mehrere Tage verteilt.
+        if i >= 5:
+            tages_renditen_5t = close.iloc[i - 4:i + 1].pct_change().dropna() * 100
+            kumuliert_5t_pct = ((close.iloc[i] - close.iloc[i - 5]) / close.iloc[i - 5]) * 100
+            staerkster_tag = tages_renditen_5t.min() if len(tages_renditen_5t) > 0 else None
+            if staerkster_tag is not None and kumuliert_5t_pct < 0 and staerkster_tag < 0:
+                zeile["sprung_anteil_5t"] = round(min(1.0, staerkster_tag / kumuliert_5t_pct), 3)
+            else:
+                zeile["sprung_anteil_5t"] = None
+        else:
+            zeile["sprung_anteil_5t"] = None
+
+        zeile["monat"] = datum.month
+
+        # Eigenes, tatsaechliches Exit-Ziel (4% soft / 7% voll) statt der
+        # festen Standard-Checkpoints - direkt an unsere echte Regel gekoppelt.
+        aktuelle_stufe = signal_stufe(score_result["dip_score"], sektor=sektor)
+        if aktuelle_stufe == "voll":
+            eigenes_ziel_pct = ZIEL_RENDITE_VOLL_PCT
+        elif aktuelle_stufe == "soft":
+            eigenes_ziel_pct = ZIEL_RENDITE_SOFT_PCT
+        else:
+            eigenes_ziel_pct = None
+        zeile["signal_stufe_aktuell"] = aktuelle_stufe
+
+        if eigenes_ziel_pct is not None:
+            erreicht_eigen, tage_eigen = rendite_bis_beliebiges_ziel(
+                close, i, eigenes_ziel_pct, max_tage=40
+            )
+            zeile["ziel_erreicht_eigen"] = erreicht_eigen
+            zeile["tage_bis_eigenes_ziel"] = tage_eigen
+        else:
+            zeile["ziel_erreicht_eigen"] = None
+            zeile["tage_bis_eigenes_ziel"] = None
 
         zeile.update(ziele_erreicht_multi(high, close, i))
 
@@ -707,6 +787,94 @@ def gd200_puffer_bin_analyse(df, bins=GD200_PUFFER_BINS):
         zeile.update(_episoden_kennzahlen(valide))
         zeilen.append(zeile)
     return pd.DataFrame(zeilen)
+
+
+def signal_qualitaet_screening(df):
+    """Screent ALLE verfuegbaren Merkmale eines Kaufsignals (Score >=
+    SOFT_KAUFSIGNAL_SCHWELLE) danach, wie stark sie mit dem tatsaechlichen
+    Erfolg (eigenes Ziel erreicht - 4% soft / 7% voll, binnen 40
+    Handelstagen) zusammenhaengen. Arbeitet auf EPISODEN-Ebene
+    (aufeinanderfolgende Signal-Tage pro Ticker zaehlen als 1), damit reine
+    Autokorrelation nicht als zusaetzliche Evidenz missverstanden wird.
+
+    Ergebnis: eine nach Vorhersagekraft (Spanne zwischen bestem und
+    schwaechstem Bereich) sortierte Tabelle - Grundlage fuer eine spaetere,
+    vom Dip Score GETRENNTE Trefferwahrscheinlichkeits-Einschaetzung
+    ("Meta-Labeling", siehe Chat). Nichts hiervon fliesst automatisch in
+    die Score-Formel ein - reine Diagnose.
+    """
+    maske = df["dip_score"] >= SOFT_KAUFSIGNAL_SCHWELLE
+    episoden = episoden_aus_maske(df, maske)
+    episoden = episoden[episoden["ziel_erreicht_eigen"].notna()].copy()
+
+    if len(episoden) < 30:
+        print(f"  Nur {len(episoden)} Episoden mit gueltigem Ziel - zu wenig fuer ein Screening.")
+        return None, len(episoden), pd.DataFrame()
+
+    basisrate = episoden["ziel_erreicht_eigen"].mean() * 100
+
+    numerische_merkmale = [
+        "rsi_score", "trend_score", "gd200_score", "ema50_score", "drawdown_score",
+        "drawdown_atr_multiple", "gd200_puffer_pct", "volumen_ratio",
+        "rsi_geschwindigkeit_3t", "atr_veraenderung_5t_pct", "sprung_anteil_5t",
+        "cluster_groesse", "monat",
+    ]
+    kategorische_merkmale = ["sektor", "ema50_ueber_gd200", "gd200_steigt", "signal_stufe_aktuell"]
+
+    zeilen = []
+
+    for merkmal in numerische_merkmale:
+        if merkmal not in episoden.columns:
+            continue
+        teil = episoden.dropna(subset=[merkmal])
+        if len(teil) < 30:
+            continue
+        try:
+            teil = teil.copy()
+            teil["_bin"] = pd.qcut(teil[merkmal], q=3, duplicates="drop")
+        except Exception:
+            continue
+        gruppiert = teil.groupby("_bin", observed=True)["ziel_erreicht_eigen"].agg(["mean", "count"])
+        gruppiert["mean"] = gruppiert["mean"] * 100
+        if len(gruppiert) < 2:
+            continue
+        zeilen.append({
+            "merkmal": merkmal,
+            "typ": "numerisch",
+            "spanne_pp": round(gruppiert["mean"].max() - gruppiert["mean"].min(), 1),
+            "bester_bereich": str(gruppiert["mean"].idxmax()),
+            "beste_quote_pct": round(gruppiert["mean"].max(), 1),
+            "schwaechster_bereich": str(gruppiert["mean"].idxmin()),
+            "schwaechste_quote_pct": round(gruppiert["mean"].min(), 1),
+            "n_gesamt": len(teil),
+        })
+
+    for merkmal in kategorische_merkmale:
+        if merkmal not in episoden.columns:
+            continue
+        teil = episoden.dropna(subset=[merkmal])
+        if len(teil) < 30:
+            continue
+        gruppiert = teil.groupby(merkmal, observed=True)["ziel_erreicht_eigen"].agg(["mean", "count"])
+        gruppiert = gruppiert[gruppiert["count"] >= 10]
+        if len(gruppiert) < 2:
+            continue
+        gruppiert["mean"] = gruppiert["mean"] * 100
+        zeilen.append({
+            "merkmal": merkmal,
+            "typ": "kategorisch",
+            "spanne_pp": round(gruppiert["mean"].max() - gruppiert["mean"].min(), 1),
+            "bester_bereich": str(gruppiert["mean"].idxmax()),
+            "beste_quote_pct": round(gruppiert["mean"].max(), 1),
+            "schwaechster_bereich": str(gruppiert["mean"].idxmin()),
+            "schwaechste_quote_pct": round(gruppiert["mean"].min(), 1),
+            "n_gesamt": len(teil),
+        })
+
+    ergebnis_df = pd.DataFrame(zeilen)
+    if not ergebnis_df.empty:
+        ergebnis_df = ergebnis_df.sort_values("spanne_pp", ascending=False).reset_index(drop=True)
+    return basisrate, len(episoden), ergebnis_df
 
 
 def jahres_robustheit(df, schwelle=KAUFSIGNAL_SCHWELLE):
@@ -1032,11 +1200,37 @@ def main():
         sys.exit(1)
 
     df = pd.DataFrame(alle_ergebnisse)
+
+    # Cluster-Groesse zum Signal-Zeitpunkt: wie viele ETFs (inkl. sich
+    # selbst) hatten am selben Kalendertag ebenfalls ein Signal? Muss als
+    # Nachbearbeitung ueber den GESAMTEN Datensatz laufen, da ein einzelner
+    # Ticker seine Geschwister nicht kennt, waehrend er verarbeitet wird.
+    signale_pro_tag = df[df["dip_score"] >= SOFT_KAUFSIGNAL_SCHWELLE].groupby("datum").size()
+    df["cluster_groesse"] = df["datum"].map(signale_pro_tag).fillna(0).astype(int)
+
     df.to_csv("backtest_ergebnisse.csv", index=False)
     print(f"\n{len(df)} ETF-Tage gespeichert in backtest_ergebnisse.csv")
 
     zusammenfassung(df, label="- Euer ETF-Universum")
     einzelfaktor_analysen(df)
+
+    print(f"\n{'=' * 60}")
+    print("SIGNAL-QUALITAETS-SCREENING: Was unterscheidet echte Treffer von")
+    print("falschen Signalen? (alle Kaufsignale, Score >= Softe Schwelle)")
+    print(f"{'=' * 60}")
+    basisrate, anzahl_episoden, screening_df = signal_qualitaet_screening(df)
+    if basisrate is not None:
+        print(f"Basisrate (eigenes Ziel erreicht, ueber alle {anzahl_episoden} Episoden): {basisrate:.1f}%\n")
+        if not screening_df.empty:
+            print(screening_df.to_string(index=False))
+            screening_df.to_csv("backtest_signal_screening.csv", index=False)
+            print("\n(gespeichert in backtest_signal_screening.csv)")
+        else:
+            print("Kein Merkmal zeigte eine auswertbare Spanne (zu wenig Daten je Bin/Kategorie).")
+    print("\nHinweis: 'spanne_pp' = Differenz der Erfolgsquote zwischen bestem und")
+    print("schwaechstem Bereich eines Merkmals, in Prozentpunkten. Je groesser,")
+    print("desto staerker haengt Erfolg/Misserfolg mit diesem Merkmal zusammen.")
+    print("n_gesamt < ~30-40 Episoden: Tendenz, kein Beweis.")
 
     print(f"\n{'-' * 60}")
     print(f"FRAGE 2: Haltedauer vs. Verkaufskurs (Episoden bei Schwelle {KAUFSIGNAL_SCHWELLE:.0f})")
