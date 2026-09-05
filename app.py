@@ -193,6 +193,7 @@ def berechne_indikatoren(isin, ticker=None):
         kandidaten = [t] if t else []
 
     data, erfolgreicher_ticker = None, None
+    letzter_fehler = None
     for ticker_symbol in kandidaten:
         # Bis zu 3 Versuche pro Ticker mit kurzer Pause dazwischen - faengt
         # kurzzeitiges Rate-Limiting bei Yahoo ab, das v.a. durch den
@@ -209,15 +210,19 @@ def berechne_indikatoren(isin, ticker=None):
                 if not df.empty and len(df) >= 200:
                     data, erfolgreicher_ticker = df, ticker_symbol
                     break
-            except Exception:
-                pass
+                elif df.empty:
+                    letzter_fehler = "leere Antwort von Yahoo Finance (evtl. Rate-Limit)"
+                else:
+                    letzter_fehler = f"nur {len(df)} Handelstage erhalten (mind. 200 noetig)"
+            except Exception as e:
+                letzter_fehler = f"{type(e).__name__}: {e}"
             if versuch < 2:
                 time.sleep(1.5)
         if data is not None:
             break
 
     if data is None:
-        return None, (kandidaten[0] if kandidaten else "N/A")
+        return None, (kandidaten[0] if kandidaten else "N/A"), letzter_fehler
 
     yahoo_zeit = "k.A."
     try:
@@ -299,7 +304,7 @@ def berechne_indikatoren(isin, ticker=None):
     # Divisionen durch Null fuehren. Deshalb hier explizit als fehlgeschlagen
     # behandeln, statt mit einem unbrauchbaren Platzhalter weiterzurechnen.
     if score_ergebnis["gd200"] == 0.0:
-        return None, erfolgreicher_ticker
+        return None, erfolgreicher_ticker, "GD200 nicht berechenbar (zu wenig gültige Kursdaten im 200-Tage-Fenster)"
 
     c_today = score_ergebnis["close"]
     rsi_today = float(indikatoren["rsi"].iloc[-1])
@@ -349,7 +354,7 @@ def berechne_indikatoren(isin, ticker=None):
         "regime_ok": regime_ok,
         "yahoo_zeit": yahoo_zeit,
         "return_serie": close.pct_change().dropna().tail(180),
-    }, erfolgreicher_ticker
+    }, erfolgreicher_ticker, None
 
 
 # ==========================================
@@ -745,7 +750,7 @@ with st.sidebar.expander("🔍 Debug: Einzelne ISIN prüfen"):
                     debug_ticker = p.get("ticker")
                     break
 
-        debug_data, debug_used_ticker = berechne_indikatoren(
+        debug_data, debug_used_ticker, debug_fehler = berechne_indikatoren(
             debug_isin.strip(), debug_ticker
         )
         if debug_data:
@@ -771,7 +776,7 @@ with st.sidebar.expander("🔍 Debug: Einzelne ISIN prüfen"):
             except Exception as e:
                 st.error(f"Rohdaten-Abruf fehlgeschlagen: {e}")
         else:
-            st.error("Keine Daten für diese ISIN/diesen Ticker gefunden.")
+            st.error(f"Keine Daten für diese ISIN/diesen Ticker gefunden. Grund: {debug_fehler}")
 
 etfs = parse_isin_file("isin.txt")
 sektor_lookup = {e["isin"]: e["sektor"] for e in etfs}
@@ -794,15 +799,15 @@ if "watchlist_signale" not in st.session_state:
     completed_count = 0
 
     def load_etf_data(item):
-        data, ticker = berechne_indikatoren(item["isin"], item.get("ticker"))
-        return item, data, ticker
+        data, ticker, fehler = berechne_indikatoren(item["isin"], item.get("ticker"))
+        return item, data, ticker, fehler
 
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(load_etf_data, item) for item in etfs]
 
         for future in as_completed(futures):
             completed_count += 1
-            item, data, ticker = future.result()
+            item, data, ticker, fehler = future.result()
 
             progress_bar.progress(
                 completed_count / total_etfs,
@@ -814,6 +819,7 @@ if "watchlist_signale" not in st.session_state:
                     "Sektor": item["sektor"],
                     "ISIN": item["isin"],
                     "Ticker": ticker,
+                    "Grund": fehler,
                 })
                 continue
 
@@ -1018,7 +1024,7 @@ with tab1:
             if not treffer.empty and treffer.iloc[0]["Return_Serie"] is not None:
                 portfolio_returns[isin] = treffer.iloc[0]["Return_Serie"]
             else:
-                pos_data, _ = berechne_indikatoren(isin, pos.get("ticker"))
+                pos_data, _, _ = berechne_indikatoren(isin, pos.get("ticker"))
                 if pos_data and pos_data.get("return_serie") is not None:
                     portfolio_returns[isin] = pos_data["return_serie"]
 
@@ -1318,9 +1324,11 @@ with tab2:
 
         for pos in aktive_positionen:
             try:
-                data, ticker_used = berechne_indikatoren(pos["isin"], pos.get("ticker"))
+                data, ticker_used, fehler = berechne_indikatoren(pos["isin"], pos.get("ticker"))
                 if not data:
-                    fehler_liste.append(f"{pos.get('name', pos.get('isin', '?'))} (keine Kursdaten)")
+                    fehler_liste.append(
+                        f"{pos.get('name', pos.get('isin', '?'))} (keine Kursdaten - {fehler})"
+                    )
                     continue
 
                 current_price = data["live_close"]
