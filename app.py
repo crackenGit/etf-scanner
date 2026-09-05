@@ -21,7 +21,6 @@ from dip_score import (
     ZIEL_RENDITE_SOFT_PCT,
     ZIEL_RENDITE_VOLL_PCT,
     RSI_WATCHLIST_SCHWELLE,
-    REGIME_MALUS_FAKTOR,
     MARKT_BENCHMARK_TICKER,
     DRAWDOWN_SCORE_MAX,
 )
@@ -84,6 +83,80 @@ MANUAL_TICKERS = {}
 # ==========================================
 DATENSTAND_CUTOFF_STUNDE = 19    # Vor dieser Uhrzeit (Europe/Berlin) gilt der heutige Schlusskurs
                                   # noch als nicht final bestätigt -> letzter Vortag wird verwendet
+
+# ==========================================
+# OFFENE PUNKTE & TODOS (manuell gepflegt)
+# ==========================================
+# Dinge, die wir im Blick behalten oder noch genauer untersuchen sollten -
+# wird in der App unter "📝 Offene Punkte & TODOs" angezeigt. Bei Bedarf
+# einfach hier ergänzen/entfernen/als erledigt streichen.
+OFFENE_PUNKTE = [
+    {
+        "titel": "Cloud & Cyber Security als schwache Sektoren",
+        "kontext": (
+            "Schneiden im Backtest durchgehend unterdurchschnittlich ab, auch "
+            "bei höheren Schwellen (z.B. nur 10-13% quote_10pct bei Schwelle 80, "
+            "gegenüber ~55% im Gesamtdurchschnitt). Cluster-Zahl (10-16) noch "
+            "zu dünn für eine endgültige Entscheidung (Sektor-Aufschlag o.ä.)."
+        ),
+        "status": "🔍 Beobachten",
+    },
+    {
+        "titel": "Softes-Signal-Ziel 3% vs. 4%",
+        "kontext": (
+            "Nach der Trend/GD200-Umkehr zeigte 3% im letzten Lauf leicht "
+            "bessere Rendite/Tag-Effizienz als das aktuell eingestellte 4%-Ziel "
+            "(ZIEL_RENDITE_SOFT_PCT). Könnte Rauschen aus einem einzelnen Lauf "
+            "sein - über 1-2 weitere Backtest-Läufe bestätigen, bevor geändert wird."
+        ),
+        "status": "🔍 Beobachten",
+    },
+    {
+        "titel": "Marktregime-Bonus statt nur Neutralisierung",
+        "kontext": (
+            "Idee: bei Bärenmarkt einen Bonus-Multiplikator (>1.0) statt nur "
+            "Neutralität einsetzen. Erste Zahlen sprechen dafür in niedrigen/"
+            "mittleren Rohscore-Bereichen (30-75), drehen sich aber im höchsten "
+            "Bereich (75-100, der eigentlichen Kaufsignal-Schwelle) leicht um - "
+            "und dort ist die Stichprobe am dünnsten (10 Cluster). Braucht eine "
+            "eigene, gründlichere Prüfung (echte Formel simulieren, nicht nur "
+            "gleiche-Rohscore-Vergleich), nicht einfach übernehmen."
+        ),
+        "status": "🔬 Genauer testen",
+    },
+    {
+        "titel": "Diversifikations-/Korrelationsfilter empirisch validieren",
+        "kontext": (
+            "Bisher nur logisch hergeleitet und mit aktuellen Korrelationswerten "
+            "verifiziert (z.B. SEC0.DE↔AIFS.DE), nicht rückblickend gebacktestet, "
+            "ob das Ausblenden korrelierter Signale tatsächlich zu besseren "
+            "Ergebnissen geführt hätte. Das Forward-Tracking-Log sammelt dafür "
+            "bereits Daten (loggt auch ausgeblendete Signale mit Grund) - "
+            "Auswertung ergibt erst nach einigen Monaten Sinn."
+        ),
+        "status": "⏳ Daten sammeln",
+    },
+    {
+        "titel": "App.py-Refactor",
+        "kontext": (
+            "Mit jeder neuen Funktion (Diversifikation, Sektor-Gruppierung, "
+            "Statistik-Box, Fallback-Cache, Signal-Log) wächst die Komplexität "
+            "in einer einzigen Datei weiter. Aufteilung in Module würde die "
+            "Wartbarkeit verbessern."
+        ),
+        "status": "⏸️ Zurückgestellt",
+    },
+    {
+        "titel": "Marktphasen-Wechsel als Re-Backtest-Anlass",
+        "kontext": (
+            "Die Bulle/Bär-Anzeige (mit Dauer in Handelstagen) ist jetzt da, "
+            "aber rein informativ - es gibt keinen automatischen Hinweis, WANN "
+            "genau ein Phasenwechsel bedeutsam genug für einen Re-Backtest ist. "
+            "Bleibt vorerst eine manuelle Einschätzung."
+        ),
+        "status": "🔍 Beobachten",
+    },
+]
 
 
 def parse_isin_file(filename="isin.txt"):
@@ -149,23 +222,44 @@ def isin_zu_ticker(isin):
 @st.cache_data(ttl=3600)
 def markt_regime_ok(benchmark_ticker=None):
     """
-    Prüft, ob ein breiter Marktindex über seinem eigenen GD200 liegt.
-    Dient als globaler Kontextfilter: In einer echten Marktkorrektur sollen
-    Kaufsignale seltener werden, auch wenn ein einzelner ETF isoliert
-    betrachtet noch "sauber" aussieht.
+    Prüft, ob ein breiter Marktindex über seinem eigenen GD200 liegt - dient
+    als Bulle/Bär-Marktphasen-Indikator (rein informativ, beeinflusst den
+    Dip Score seit der Regime-Malus-Entfernung nicht mehr - siehe Chat: ein
+    Backtest zeigte, dass die fürs Ziel relevante Erreichquote bei
+    schlechtem Regime nicht schlechter war, teils sogar besser).
+
+    Gibt zusätzlich zurück, seit wie vielen Handelstagen die aktuelle Phase
+    andauert. Ein kürzlicher Phasenwechsel ist ein Hinweis darauf, dass ein
+    Re-Backtest sinnvoll sein könnte - die aktuelle Formel ist ja auf die
+    Marktbedingungen der bisherigen Backtest-Historie kalibriert.
+
+    Rückgabe: (regime_ok: bool, seit_tagen: int | None)
     """
     ticker = benchmark_ticker or MARKT_BENCHMARK_TICKER
     try:
-        df = yf.download(ticker, period="1y", progress=False, auto_adjust=False)
+        df = yf.download(ticker, period="3y", progress=False, auto_adjust=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         close = df["Close"].dropna()
         if len(close) < 200:
-            return True  # nicht genug Historie -> im Zweifel keinen Malus anwenden
+            return True, None  # nicht genug Historie -> im Zweifel neutral
+
         gd200 = close.rolling(window=200).mean()
-        return bool(float(close.iloc[-1]) > float(gd200.iloc[-1]))
+        ueber_gd200 = (close > gd200).dropna()
+        if ueber_gd200.empty:
+            return True, None
+
+        aktueller_status = bool(ueber_gd200.iloc[-1])
+        seit_tagen = 0
+        for wert in reversed(ueber_gd200.tolist()):
+            if bool(wert) == aktueller_status:
+                seit_tagen += 1
+            else:
+                break
+
+        return aktueller_status, seit_tagen
     except Exception:
-        return True  # Fail-safe: bei Datenproblem keinen Malus anwenden
+        return True, None  # Fail-safe: bei Datenproblem neutral bleiben
 
 
 @st.cache_data(ttl=86400 * 30)  # 30 Tage - ETF-Namen ändern sich praktisch nie
@@ -180,6 +274,18 @@ def hole_etf_name(ticker):
         return name if name else ticker
     except Exception:
         return ticker
+
+
+@st.cache_resource
+def _letzte_bekannte_daten():
+    """Persistenter Speicher (ueberlebt Streamlit-Reruns, nicht aber einen
+    Reboot) fuer den zuletzt ERFOLGREICH berechneten Datensatz je ISIN.
+    Dient als Fallback, wenn ein Live-Abruf temporaer fehlschlaegt (z.B.
+    vor Handelsbeginn oder am Wochenende, wenn Yahoo Finance die juengsten
+    Tagesbalken noch nicht vollstaendig/fehlerfrei liefert - siehe Chat).
+    Ein einfaches Dict reicht: @st.cache_resource gibt bei jedem Aufruf
+    dasselbe Objekt zurueck, Mutation ist hier bewusst gewollt."""
+    return {}
 
 
 @st.cache_data(ttl=300)
@@ -222,6 +328,13 @@ def berechne_indikatoren(isin, ticker=None):
             break
 
     if data is None:
+        cache = _letzte_bekannte_daten()
+        if isin in cache:
+            alt_ergebnis, alt_ticker, alt_zeitpunkt = cache[isin]
+            alt_ergebnis = dict(alt_ergebnis)
+            alt_ergebnis["ist_stale"] = True
+            alt_ergebnis["stale_seit"] = alt_zeitpunkt
+            return alt_ergebnis, alt_ticker, None
         return None, (kandidaten[0] if kandidaten else "N/A"), letzter_fehler
 
     yahoo_zeit = "k.A."
@@ -292,7 +405,7 @@ def berechne_indikatoren(isin, ticker=None):
     # Einzige Quelle der Wahrheit fuer die Score-Formel, identisch zu dem,
     # was backtest.py verwendet.
     indikatoren = berechne_indikator_serien(close, high, low)
-    regime_ok = markt_regime_ok()
+    regime_ok, regime_seit_tagen = markt_regime_ok()
     score_ergebnis = score_am_punkt(indikatoren, -1, regime_ok=regime_ok)
 
     # Absicherung: GD200 kann trotz >=200 Rohzeilen NaN bleiben, wenn
@@ -304,6 +417,13 @@ def berechne_indikatoren(isin, ticker=None):
     # Divisionen durch Null fuehren. Deshalb hier explizit als fehlgeschlagen
     # behandeln, statt mit einem unbrauchbaren Platzhalter weiterzurechnen.
     if score_ergebnis["gd200"] == 0.0:
+        cache = _letzte_bekannte_daten()
+        if isin in cache:
+            alt_ergebnis, alt_ticker, alt_zeitpunkt = cache[isin]
+            alt_ergebnis = dict(alt_ergebnis)
+            alt_ergebnis["ist_stale"] = True
+            alt_ergebnis["stale_seit"] = alt_zeitpunkt
+            return alt_ergebnis, alt_ticker, None
         return None, erfolgreicher_ticker, "GD200 nicht berechenbar (zu wenig gültige Kursdaten im 200-Tage-Fenster)"
 
     c_today = score_ergebnis["close"]
@@ -331,7 +451,7 @@ def berechne_indikatoren(isin, ticker=None):
         close_1w = float(close.iloc[-6])
         perf_1w = ((c_today - close_1w) / close_1w) * 100
 
-    return {
+    ergebnis = {
         "close": c_today,
         "rsi": rsi_today,
         "rsi35_preis": float(rsi35_preis),
@@ -352,9 +472,18 @@ def berechne_indikatoren(isin, ticker=None):
         "drawdown_20t_pct": score_ergebnis["drawdown_20t_pct"],
         "drawdown_atr_multiple": score_ergebnis["drawdown_atr_multiple"],
         "regime_ok": regime_ok,
+        "regime_seit_tagen": regime_seit_tagen,
         "yahoo_zeit": yahoo_zeit,
         "return_serie": close.pct_change().dropna().tail(180),
-    }, erfolgreicher_ticker, None
+        "ist_stale": False,
+        "stale_seit": None,
+    }
+    _letzte_bekannte_daten()[isin] = (
+        ergebnis,
+        erfolgreicher_ticker,
+        datetime.now(ZoneInfo("Europe/Berlin")).strftime("%d.%m. %H:%M Uhr"),
+    )
+    return ergebnis, erfolgreicher_ticker, None
 
 
 # ==========================================
@@ -556,12 +685,17 @@ with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     vor). Nach ATR-Normierung bleibt ein kleinerer, aber sauberer,
     sektor-fairer Effekt. Volle Punktzahl ab 6 ATR Rückgang.
 
-    ### 🌍 Marktregime-Filter
-    Zusätzlich wird geprüft, ob der breite Referenzindex (`{MARKT_BENCHMARK_TICKER}`)
-    selbst über seinem GD200 notiert. Falls nicht, werden **alle** Scores mit
-    ×{REGIME_MALUS_FAKTOR} multipliziert - in einer echten Marktkorrektur werden
-    Kaufsignale dadurch automatisch seltener, auch wenn ein einzelner ETF
-    isoliert betrachtet noch sauber aussieht.
+    ### 🐂🐻 Marktphase (rein informativ, kein Einfluss auf den Score)
+    Zusätzlich wird angezeigt, ob der breite Referenzindex (`{MARKT_BENCHMARK_TICKER}`)
+    selbst über seinem GD200 notiert (Bulle) oder darunter (Bär), inklusive
+    seit wie vielen Handelstagen diese Phase andauert. Früher wurden Scores
+    in einer "Bär"-Phase mit ×0.8 gedämpft - ein gezielter Nachtest zeigte
+    aber: die für uns relevante Zielrenditen-Quote war dabei nicht schlechter,
+    teils sogar besser, und Ziele wurden im Schnitt sogar schneller erreicht.
+    Der Malus wurde deshalb entfernt. Der Hinweis bleibt trotzdem sichtbar -
+    einerseits als Kontext, andererseits: Ein deutlicher Phasenwechsel ist
+    ein guter Anlass, die Formel neu zu backtesten, da sie auf die
+    Marktbedingungen der bisherigen Historie kalibriert ist.
     """)
 
 with st.expander("📊 Wie wird das Verkaufsziel gesetzt? (Regelwerk)", expanded=False):
@@ -590,6 +724,16 @@ with st.expander("📊 Wie wird das Verkaufsziel gesetzt? (Regelwerk)", expanded
         "werden kann, muss die Position `'signal_stufe': 'soft'` oder "
         "`'voll'` (oder ersatzweise `'dip_score_bei_kauf'`) in `portfolio.py` haben."
     )
+
+with st.expander("📝 Offene Punkte & TODOs", expanded=False):
+    st.caption(
+        "Dinge, die wir im Blick behalten oder noch genauer untersuchen "
+        "sollten - wird manuell gepflegt (siehe OFFENE_PUNKTE in app.py)."
+    )
+    for punkt in OFFENE_PUNKTE:
+        st.markdown(f"**{punkt['status']} - {punkt['titel']}**")
+        st.caption(punkt["kontext"])
+        st.divider()
 
 with st.expander("📈 Backtest-Erkenntnisse zum Nachlesen (Statistik)", expanded=False):
     st.caption(
@@ -710,7 +854,27 @@ with st.expander("📈 Backtest-Erkenntnisse zum Nachlesen (Statistik)", expande
         """)
 
     st.markdown("""
-    ##### 7) Jahres-Robustheit
+    ##### 7) Marktregime: Malus entfernt (Update)
+    Bei **gleichem Rohscore** (vor der früheren Regime-Dämpfung zurückgerechnet),
+    Bulle vs. Bär verglichen:
+
+    | Rohscore | Chance auf +10% (Bulle vs. Bär) | Ø Tage bis Ziel (Bulle vs. Bär) |
+    |---|---|---|
+    | 30-45 | 20,9% vs. **31,2%** | 23,7 vs. **20,4** |
+    | 45-60 | 24,9% vs. **29,5%** | 22,9 vs. **19,7** |
+    | 60-75 | **30,4%** vs. 28,5% | **21,1** vs. 19,9 |
+    | 75-100 | **51,9%** vs. 50,0% | 18,6 vs. 20,8 (dünn: n=10 Cluster) |
+
+    Die für uns entscheidende Zielrenditen-Quote war bei schlechtem Regime nicht
+    schlechter (meist sogar besser), und Ziele wurden im Schnitt eher schneller
+    als langsamer erreicht - nur eine nicht handelsrelevante Nebenmetrik
+    (Trefferquote nach fixen 21 Tagen) sprach für den alten ×0.8-Malus. Der
+    Regime-Status bleibt als reine Information sichtbar (Bulle/Bär-Anzeige,
+    inkl. Tage seit Phasenwechsel), beeinflusst den Score aber nicht mehr.
+    """)
+
+    st.markdown("""
+    ##### 8) Jahres-Robustheit
     Trägt über die meisten Jahre der Historie (2009-2026), mit einer klaren
     Ausnahme: **2025 war das schwächste Jahr** (13,2% Trefferquote bei Schwelle
     75, n=38/5 Cluster) - kein Ausschlusskriterium, aber ein Hinweis, dass die
@@ -851,6 +1015,9 @@ if "watchlist_signale" not in st.session_state:
             drawdown_20t_pct = data["drawdown_20t_pct"]
             drawdown_atr_multiple = data["drawdown_atr_multiple"]
             regime_ok = data["regime_ok"]
+            regime_seit_tagen = data.get("regime_seit_tagen")
+            ist_stale = data.get("ist_stale", False)
+            stale_seit = data.get("stale_seit")
             live_kurs = data["live_close"]
             live_rsi = data["live_rsi"]
             rsi_score = data["rsi_score"]
@@ -896,7 +1063,12 @@ if "watchlist_signale" not in st.session_state:
                 "Drawdown_20t_Pct": drawdown_20t_pct,
                 "Drawdown_ATR_Multiple": drawdown_atr_multiple,
                 "Marktregime_OK": regime_ok,
-                "Zeitstempel": data["yahoo_zeit"],
+                "Marktregime_Seit_Tagen": regime_seit_tagen,
+                "Ist_Stale": ist_stale,
+                "Stale_Seit": stale_seit,
+                "Zeitstempel": (
+                    f"🕒 {stale_seit} (nicht live)" if ist_stale else data["yahoo_zeit"]
+                ),
                 "Ist_Kaufsignal": ist_kaufsignal,
                 "Ist_Soft_Signal": ist_soft_signal,
                 "Ist_Portfolio": ist_in_portfolio,
@@ -937,13 +1109,12 @@ with tab1:
     watch = st.session_state.get("watchlist_signale", [])
 
     regime_status = watch[0]["Marktregime_OK"] if watch else True
+    regime_seit = watch[0].get("Marktregime_Seit_Tagen") if watch else None
+    seit_text = f" (seit {regime_seit} Handelstagen)" if regime_seit else ""
     if regime_status:
-        st.caption("🟢 **Marktregime:** Referenzindex über GD200 - normales Scoring.")
+        st.caption(f"🐂 **Marktphase: Bulle**{seit_text} - Referenzindex über GD200. Rein informativ, kein Einfluss auf den Score.")
     else:
-        st.caption(
-            f"🔴 **Marktregime:** Referenzindex unter GD200 - alle Scores werden mit "
-            f"×{REGIME_MALUS_FAKTOR} gedämpft (Kaufsignale seltener)."
-        )
+        st.caption(f"🐻 **Marktphase: Bär**{seit_text} - Referenzindex unter GD200. Rein informativ, kein Einfluss auf den Score.")
 
     anzahl_kaufsignale = sum(1 for e in watch if e["Ist_Kaufsignal"])
     anzahl_soft_signale = sum(1 for e in watch if e["Ist_Soft_Signal"])
@@ -1087,6 +1258,8 @@ with tab1:
         def format_name_rank(row):
             name = row["Name"]
             rank = row["Dip_Rank"]
+            if row.get("Ist_Stale", False):
+                name = f"🕒 {name}"
             if row["Ist_Kaufsignal"]:
                 praefix = "🔥 "
             elif row["Ist_Soft_Signal"]:
@@ -1178,7 +1351,7 @@ with tab1:
             )
 
             display_df["Regime"] = df_gruppe["Marktregime_OK"].map(
-                lambda ok: "🟢 ×1.00" if ok else f"🔴 ×{REGIME_MALUS_FAKTOR:.2f}"
+                lambda ok: "🐂 Bulle" if ok else "🐻 Bär"
             )
 
             display_df["Signal"] = [
@@ -1254,6 +1427,12 @@ with tab1:
             "Trendstruktur), ↑↑ bedeutet 0 Punkte - **umgekehrt** zur "
             "klassischen Lesart von 'Trend intakt = gut'. Details dazu oben "
             "unter 'Wann entsteht ein Kaufsignal?'."
+        )
+        st.caption(
+            "🕒 vor dem Namen bedeutet: Live-Abruf gerade nicht möglich "
+            "(z. B. außerhalb der Handelszeiten), es wird der letzte "
+            "erfolgreich geladene Stand gezeigt - Zeitpunkt siehe Spalte "
+            "'Zeitstempel'."
         )
 
         # --- Sektor-gruppierte Anzeige der "neuen Chancen" ---
@@ -1406,7 +1585,11 @@ with tab2:
                     days_held = (today_date - buy_date).days
 
                 portfolio_zeilen.append({
-                    "Name": pos.get("name", ticker_used),
+                    "Name": (
+                        f"🕒 {pos.get('name', ticker_used)}"
+                        if data.get("ist_stale", False)
+                        else pos.get("name", ticker_used)
+                    ),
                     "ISIN": pos["isin"],
                     "Sektor": pos_sektor,
                     "Ticker": ticker_used,
