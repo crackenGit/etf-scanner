@@ -72,7 +72,12 @@ def berechne_indikator_serien(close: pd.Series, high: pd.Series, low: pd.Series)
     close/high/low müssen denselben, chronologisch aufsteigend sortierten
     DatetimeIndex besitzen und bereits NaN-bereinigt sein.
     """
-    gd200 = close.rolling(window=200).mean()
+    # min_periods=190 statt 200: toleriert kleinere Datenluecken (z.B.
+    # wochenendbedingte oder temporaere Yahoo-Datenprobleme) innerhalb des
+    # Fensters, ohne die GD200 bei jeder einzelnen fehlenden Zeile komplett
+    # zu verwerfen. 190/200 = 95% Abdeckung noetig, echte Kurzhistorie faellt
+    # weiterhin sauber durch.
+    gd200 = close.rolling(window=200, min_periods=190).mean()
     ema50 = close.ewm(span=50, adjust=False).mean()
 
     delta = close.diff()
