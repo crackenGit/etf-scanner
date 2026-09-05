@@ -23,6 +23,7 @@ from dip_score import (
     RSI_WATCHLIST_SCHWELLE,
     MARKT_BENCHMARK_TICKER,
     DRAWDOWN_SCORE_MAX,
+    FORMEL_VERSION,
 )
 
 import importlib
@@ -506,7 +507,8 @@ def berechne_indikatoren(isin, ticker=None):
 SIGNAL_LOG_SPALTEN = [
     "Datum", "Zeitstempel", "ISIN", "Ticker", "Name", "Sektor", "Kurs",
     "Dip_Score", "Signal_Stufe", "RSI_Score", "Trend_Score", "GD200_Score",
-    "EMA50_Score", "Drawdown_Score", "Ist_Portfolio", "Ausgeblendet", "Ausblend_Grund",
+    "EMA50_Score", "Drawdown_Score", "Ist_Portfolio", "Ausgeblendet",
+    "Ausblend_Grund", "Formel_Version",
 ]
 
 
@@ -529,8 +531,15 @@ def hole_signal_sheet():
         client = gspread.authorize(creds)
         sheet = client.open_by_key(st.secrets["signal_log_sheet_id"]).sheet1
         werte = sheet.get_all_values()
-        if not werte or werte[0] != SIGNAL_LOG_SPALTEN:
-            sheet.insert_row(SIGNAL_LOG_SPALTEN, index=1)
+        if not werte:
+            sheet.append_row(SIGNAL_LOG_SPALTEN)
+        elif werte[0] != SIGNAL_LOG_SPALTEN:
+            # Header existiert, ist aber veraltet (z.B. neue Spalte wie
+            # Formel_Version hinzugekommen) - Zeile 1 in-place ueberschreiben,
+            # statt eine zusaetzliche Kopfzeile einzufuegen. Bestehende
+            # Datenzeilen bleiben unberuehrt (fehlende neue Spalten zeigen
+            # sich einfach als leere Zellen, kein Datenverlust).
+            sheet.update("A1", [SIGNAL_LOG_SPALTEN])
         st.session_state["signal_log_fehler"] = None
         return sheet
     except Exception as e:
@@ -605,6 +614,7 @@ def logge_signale(df_watch):
                 bool(row["Ist_Portfolio"]),
                 bool(row["Ausgeblendet"]),
                 row["Ausblend_Grund"],
+                FORMEL_VERSION,
             ])
 
         if neue_zeilen:
