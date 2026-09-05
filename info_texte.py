@@ -286,6 +286,48 @@ def render_statistik_tab():
         Strategie nicht in jeder Marktphase gleich gut funktioniert.
         """)
 
+        st.markdown("""
+        ##### 9) Trefferwahrscheinlichkeit - zweites, vom Score getrenntes Modell
+        Neue Frage, anders als bisher: Nicht "ist das ein Kaufsignal", sondern
+        "wie sehr vertraue ich einem *bereits ausgelösten* Signal" (sog.
+        Meta-Labeling). Dafür wurden bei allen echten Kaufsignalen (Score ≥ 65,
+        3.459 Episoden) systematisch alle verfügbaren Merkmale gegen "eigenes
+        Ziel erreicht" (4%/7%, exakt statt genähert) gescreent. Ergebnis:
+
+        | Merkmal | Spanne (Prozentpunkte) |
+        |---|---|
+        | Sektor | 53,3 (aber: Extremwerte auf 1-2 ETFs zurückzuführen, siehe unten) |
+        | EMA50-Score | 20,6 |
+        | ATR-Rückgang | 15,3 |
+        | GD200-Score/Puffer | 13,6 / 11,3 |
+        | Cluster-Größe (gleichzeitige Signale) | 11,3 |
+        | RSI-Geschwindigkeit, Volatilitäts-Trend, Sprung-Anteil, Monat | alle < 6 (zu schwach) |
+
+        **Sektor ausführlich geprüft:** Cloud und Cyber Security, früher als
+        schwach vermerkt, zeigen mit mehr Daten jetzt überdurchschnittliche Quoten
+        (72-75%) - der alte Verdacht war Datenmangel. Konsumgüter fällt zwar mit
+        33% deutlich ab, beruht aber nur auf 2 ETFs im gesamten Universum - keine
+        verlässliche Sektor-Aussage, eher zwei einzelne schwache Titel.
+
+        **ATR-Rückgang und EMA50-Score wirken nachweislich unabhängig voneinander**
+        (in jeder Kombination geprüft, keine Überlagerung) und wurden deshalb zur
+        neuen Watchlist-Spalte "Trefferwahrsch." kombiniert:
+
+        | ATR-Rückgang | EMA50-Score | Trefferquote | Ø Rendite (21T) | Cluster (n) |
+        |---|---|---|---|---|
+        | 0-3 | hoch (15-20) | **91,5%** | **+8,84%** | 129 |
+        | 3-5 | hoch (15-20) | 87,7% | +7,09% | 301 |
+        | 5-7 | hoch (15-20) | 76,3% | +3,16% | 430 |
+        | 5-7 | niedrig (0-10) | 59,4% | +0,09% | 685 |
+        | 7+ | niedrig (0-10) | **54,3%** | +0,21% | 164 |
+
+        Trefferquote und tatsächliche Rendite bestätigen sich gegenseitig - kein
+        Zufallsfund. Wichtig: Diese Einschätzung fließt bewusst **nicht** in den
+        Dip Score selbst ein, sondern steht als eigene, unabhängige Information
+        daneben (siehe `trefferwahrscheinlichkeit.py`) - der Score beantwortet
+        "ist das ein Signal", diese Spalte "wie sehr vertraue ich diesem Signal".
+        """)
+
         st.caption(
             "⚠️ Diese Zahlen sind ein Stand vom letzten Backtest-Lauf, kein Live-Update - "
             "nach der nächsten Formel-/Schwellen-Anpassung hier manuell nachziehen."
