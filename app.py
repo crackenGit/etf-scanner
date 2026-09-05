@@ -85,24 +85,29 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # einfach hier ergänzen/entfernen/als erledigt streichen.
 OFFENE_PUNKTE = [
     {
-        "titel": "Cloud & Cyber Security als schwache Sektoren",
+        "titel": "Exit-Ziel nach Trefferwahrscheinlichkeit staffeln",
         "kontext": (
-            "Schneiden im Backtest durchgehend unterdurchschnittlich ab, auch "
-            "bei höheren Schwellen (z.B. nur 10-13% quote_10pct bei Schwelle 80, "
-            "gegenüber ~55% im Gesamtdurchschnitt). Cluster-Zahl (10-16) noch "
-            "zu dünn für eine endgültige Entscheidung (Sektor-Aufschlag o.ä.)."
+            "Aktuell fixes Ziel (4%/7%) unabhängig davon, wie stark ATR+EMA50 "
+            "für das Signal sprechen. Die Backtest-Daten zeigen aber: starke "
+            "Signale (Trefferwahrsch. ≥90%) liefen im Schnitt +8,84% statt nur "
+            "+0,21% bei schwachen (<55%) - ein einheitliches 7%-Ziel könnte bei "
+            "den besten Signalen systematisch zu früh verkaufen. Naheliegender "
+            "nächster Schritt nach der Trefferwahrscheinlichkeits-Einführung."
         ),
-        "status": "🔍 Beobachten",
+        "status": "🔬 Genauer testen",
     },
     {
-        "titel": "Softes-Signal-Ziel 3% vs. 4%",
+        "titel": "Widerspruch: Score belohnt tiefes ATR, Trefferwahrsch. warnt davor",
         "kontext": (
-            "Nach der Trend/GD200-Umkehr zeigte 3% im letzten Lauf leicht "
-            "bessere Rendite/Tag-Effizienz als das aktuell eingestellte 4%-Ziel "
-            "(ZIEL_RENDITE_SOFT_PCT). Könnte Rauschen aus einem einzelnen Lauf "
-            "sein - über 1-2 weitere Backtest-Läufe bestätigen, bevor geändert wird."
+            "Der Dip Score vergibt bis zum Cap (6 ATR) linear steigende Punkte "
+            "für tieferen Rückgang. Das Signal-Screening zeigt aber: UNTER den "
+            "bereits qualifizierenden Signalen sinkt die Erfolgsquote bei sehr "
+            "tiefem ATR wieder (89,3% bei 2-3 ATR -> 54,4% bei 10+ ATR, klar "
+            "monoton). Score und Trefferwahrscheinlichkeit bewerten dieselbe "
+            "Größe also gegenläufig - noch nicht aufgelöst, ob der Score selbst "
+            "einen früheren Peak statt eines Cap braucht."
         ),
-        "status": "🔍 Beobachten",
+        "status": "🔬 Genauer testen",
     },
     {
         "titel": "Marktregime-Bonus statt nur Neutralisierung",
@@ -118,6 +123,17 @@ OFFENE_PUNKTE = [
         "status": "🔬 Genauer testen",
     },
     {
+        "titel": "Trefferwahrscheinlichkeits-Tabelle aktuell halten",
+        "kontext": (
+            "Die Tabelle in trefferwahrscheinlichkeit.py ist ein eingefrorener "
+            "Schnappschuss vom Screening-Lauf (3.459 Episoden). Bei künftigen "
+            "Formel-Änderungen (z.B. am ATR-Cap, siehe oben) oder einfach nach "
+            "genug neuen Backtest-Daten sollte sie manuell neu berechnet werden, "
+            "sonst driftet sie von der aktuell laufenden Formel weg."
+        ),
+        "status": "🔧 Pflege bei Bedarf",
+    },
+    {
         "titel": "Diversifikations-/Korrelationsfilter empirisch validieren",
         "kontext": (
             "Bisher nur logisch hergeleitet und mit aktuellen Korrelationswerten "
@@ -128,6 +144,27 @@ OFFENE_PUNKTE = [
             "Auswertung ergibt erst nach einigen Monaten Sinn."
         ),
         "status": "⏳ Daten sammeln",
+    },
+    {
+        "titel": "Softes-Signal-Ziel 3% vs. 4%",
+        "kontext": (
+            "Nach der Trend/GD200-Umkehr zeigte 3% im letzten Lauf leicht "
+            "bessere Rendite/Tag-Effizienz als das aktuell eingestellte 4%-Ziel "
+            "(ZIEL_RENDITE_SOFT_PCT). Könnte Rauschen aus einem einzelnen Lauf "
+            "sein - über 1-2 weitere Backtest-Läufe bestätigen, bevor geändert wird."
+        ),
+        "status": "🔍 Beobachten",
+    },
+    {
+        "titel": "Konsumgüter: nur 2 ETFs im gesamten Universum",
+        "kontext": (
+            "Zeigt im Signal-Screening durchgehend die schwächste Erfolgsquote "
+            "(33%), beruht aber nur auf 2 Tickern (XDWS.DE, ZPDS.DE) - keine "
+            "verlässliche Sektor-Aussage. Entscheidung offen: so lassen, "
+            "streichen, oder mit weiteren Konsumgüter-ETFs für eine echte "
+            "Sektor-Einschätzung ergänzen."
+        ),
+        "status": "🔍 Beobachten",
     },
     {
         "titel": "Marktphasen-Wechsel als Re-Backtest-Anlass",
