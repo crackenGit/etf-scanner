@@ -321,7 +321,6 @@ def berechne_indikatoren(isin, ticker=None):
         "gd200_score": score_ergebnis["gd200_score"],
         "ema50_score": score_ergebnis["ema50_score"],
         "drawdown_score": score_ergebnis["drawdown_score"],
-        "gd200_bruch_malus_faktor": score_ergebnis["gd200_bruch_malus_faktor"],
         "drawdown_20t_pct": score_ergebnis["drawdown_20t_pct"],
         "drawdown_atr_multiple": score_ergebnis["drawdown_atr_multiple"],
         "regime_ok": regime_ok,
@@ -372,8 +371,9 @@ def hole_signal_sheet():
         )
         client = gspread.authorize(creds)
         sheet = client.open_by_key(st.secrets["signal_log_sheet_id"]).sheet1
-        if not sheet.get_all_values():
-            sheet.append_row(SIGNAL_LOG_SPALTEN)
+        werte = sheet.get_all_values()
+        if not werte or werte[0] != SIGNAL_LOG_SPALTEN:
+            sheet.insert_row(SIGNAL_LOG_SPALTEN, index=1)
         st.session_state["signal_log_fehler"] = None
         return sheet
     except Exception as e:
@@ -470,13 +470,13 @@ with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     ### 🎯 Zwei Signalstufen statt Ja/Nein
     Es gibt keinen separaten Ja/Nein-Filter - alle Kriterien (RSI, Trend,
     Kursrückgang, Marktumfeld) fließen in **einen einzigen Score** von
-    maximal ca. 100 Punkten ein. Der Backtest über ~277.000 ETF-Tage zeigt
+    maximal 100 Punkten ein. Der Backtest über ~277.000 ETF-Tage zeigt
     zwei sinnvolle Schwellen mit unterschiedlicher Renditeerwartung:
 
     | Stufe | Score | Backtest-Trefferquote (40 Handelstage) |
     |---|---|---|
-    | 🟡 Softes Signal | {SOFT_KAUFSIGNAL_SCHWELLE:.0f}-{KAUFSIGNAL_SCHWELLE - 1:.0f} | ~80% erreichen +5% |
-    | 🔥 Kaufsignal | ≥ {KAUFSIGNAL_SCHWELLE:.0f} | ~63% erreichen +10% |
+    | 🟡 Softes Signal | {SOFT_KAUFSIGNAL_SCHWELLE:.0f}-{KAUFSIGNAL_SCHWELLE - 1:.0f} | ~69% erreichen +5% |
+    | 🔥 Kaufsignal | ≥ {KAUFSIGNAL_SCHWELLE:.0f} | ~56% erreichen +10% |
 
     Bei der Order lohnt es sich, die Stufe zu notieren (z. B. in
     `portfolio.py`) - ein softes Signal rechtfertigt eher ein niedrigeres
@@ -485,13 +485,13 @@ with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     | Komponente | Max. Punkte | Was gemessen wird |
     |---|---|---|
     | RSI-Sweet-Spot | 20 | Abstand zu RSI 25 (siehe unten) |
-    | Trend intakt | 15 | EMA50 > GD200 **und** GD200 steigt |
-    | Puffer über GD200 | 15 | Sicherheitsabstand zur langfristigen Stütze |
-    | Mean-Reversion-Potenzial | 15 | Rebound-Distanz bis zur EMA50 |
-    | **Kursrückgang-Tiefe** | **35** | Wie stark der Kurs vor dem Signal fiel |
+    | Trend-Struktur | 15 | EMA50 **unter** GD200 **oder** GD200 fällt (siehe unten - Logik bewusst umgekehrt) |
+    | Abstand zur GD200 | 15 | Distanz zur GD200, **Richtung egal** (siehe unten) |
+    | Mean-Reversion-Potenzial | 20 | Rebound-Distanz bis zur EMA50 |
+    | **Kursrückgang-Tiefe (ATR)** | **30** | Wie stark der Kurs vor dem Signal fiel, volatilitätsbereinigt |
 
     **Wichtig:** Ohne nennenswerten vorherigen Kursrückgang sind maximal
-    **65** der 100 Punkte erreichbar (RSI + Trend + GD200-Puffer +
+    **70** der 100 Punkte erreichbar (RSI + Trend + GD200-Abstand +
     EMA50-Potenzial). Ein Kaufsignal ab {KAUFSIGNAL_SCHWELLE:.0f} Punkten
     ist damit rechnerisch nur möglich, wenn der Kurs auch tatsächlich
     spürbar gefallen ist.
@@ -503,12 +503,30 @@ with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     Seiten linear ab, statt einfach mit sinkendem RSI immer weiter zu
     steigen.
 
-    ### 📉 Kursrückgang-Tiefe (größte Einzelkomponente)
-    Rückgang vom 20-Tage-Hoch bis heute. Das war im Backtest das mit
-    Abstand stärkste Einzelsignal: Die Wahrscheinlichkeit, +10% zu
-    erreichen, stieg sauber von ~23% (flacher Rückgang) auf ~80% (Rückgang
-    über 30%) - "größerer Dip = größerer Rebound" bestätigte sich klar,
-    "fallendes Messer" nicht. Volle Punktzahl ab ca. 29% Rückgang.
+    ### 🔄 Trend-Struktur & GD200-Abstand - Logik bewusst umgekehrt
+    Ursprünglich belohnte der Score einen "intakten" Aufwärtstrend (EMA50
+    über GD200, GD200 steigend) und einen möglichst großen Puffer *über*
+    der GD200. Ein gezielter Nachtest (innerhalb gleicher Rückgangstiefe-
+    Stufen, um einen Doppel-Zähl-Effekt auszuschließen) zeigte das
+    **Gegenteil**: ETFs mit bereits **gebrochener** Trendstruktur
+    schnitten in jeder geprüften Rückgangs-Kategorie besser ab (z. B. 33,9%
+    vs. 21,8% Chance auf +10% bei starkem Rückgang) - vermutlich, weil ein
+    gebrochener Trend einen "reiferen", weiter fortgeschrittenen Rückgang
+    anzeigt, näher am Boden. Beim GD200-Abstand zeigte sich zusätzlich eine
+    **U-Form** statt einer Linie: sowohl weit unter als auch weit über der
+    GD200 schnitten deutlich besser ab als der ehemalige "Sweet Spot" bei
+    +5 bis +10% (dem schwächsten Bereich überhaupt). Das Downside-Risiko
+    wurde für beide Extreme geprüft und ist vergleichbar - keine
+    Sonderbehandlung einer Richtung nötig. Bricht mit klassischer
+    Chart-Weisheit, ist aber gut durch die Daten gestützt.
+
+    ### 📉 Kursrückgang-Tiefe (ATR-normalisiert, größte Einzelkomponente)
+    Rückgang vom 20-Tage-Hoch bis heute, gemessen in Vielfachen des
+    ATR(14) statt in rohen Prozent. Ein roher Prozent-Rückgang war zwar das
+    stärkste Einzelsignal, aber stark sektor-/volatilitätsverzerrt (rohe
+    -30%-Rückgänge kommen fast nur bei volatilen Sektoren wie Halbleiter
+    vor). Nach ATR-Normierung bleibt ein kleinerer, aber sauberer,
+    sektor-fairer Effekt. Volle Punktzahl ab 6 ATR Rückgang.
 
     ### 🌍 Marktregime-Filter
     Zusätzlich wird geprüft, ob der breite Referenzindex (`{MARKT_BENCHMARK_TICKER}`)
@@ -516,14 +534,6 @@ with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
     ×{REGIME_MALUS_FAKTOR} multipliziert - in einer echten Marktkorrektur werden
     Kaufsignale dadurch automatisch seltener, auch wenn ein einzelner ETF
     isoliert betrachtet noch sauber aussieht.
-
-    ### 📉 GD200-Bruch-Malus
-    Der Trend-Score (EMA50 vs. GD200, GD200-Richtung) kann "grün" bleiben,
-    obwohl der Kurs selbst schon spürbar unter seinem GD200 liegt - der GD200
-    reagiert als 200-Tage-Schnitt sehr träge. Deshalb dämpft ein zusätzlicher,
-    graduell wirkender Malus den **gesamten** Score, je weiter der Kurs unter
-    dem GD200 liegt: kein Abzug bei Kurs auf/über GD200, bis zu ×0.6 (also
-    -40%) ab 10% Abstand oder mehr.
     """)
 
 with st.expander("📊 Wie wird das Verkaufsziel gesetzt? (Regelwerk)", expanded=False):
@@ -609,8 +619,32 @@ with st.expander("📈 Backtest-Erkenntnisse zum Nachlesen (Statistik)", expande
     ATR-Version, nicht die rohe.
     """)
 
+    st.markdown("""
+    ##### 4) Trend-Struktur & GD200-Abstand - Logik umgekehrt (Update)
+    | Trend-Kombination | Cluster | Chance auf +10% (bei starkem Rückgang) |
+    |---|---|---|
+    | EMA50>GD200 **und** GD200 steigt (alte "volle Punktzahl") | 183 | **21,8%** (schwächste) |
+    | EMA50>GD200, GD200 fällt | 180 | 26,1% |
+    | EMA50<GD200, GD200 steigt | 157 | 28,4% |
+    | EMA50<GD200 **und** GD200 fällt (neue "volle Punktzahl") | 166 | **33,9%** (stärkste) |
+
+    | GD200-Abstand | Chance auf +10% (bei starkem Rückgang) |
+    |---|---|
+    | Tief unter GD200 (<-5%) | **45,0%** |
+    | Mitte (0-10%, ehemaliger "Sweet Spot") | 15-24% (schwächster Bereich) |
+    | Weit drüber (≥20%) | **37,3%** |
+
+    Beide Effekte wurden **innerhalb gleicher ATR-Rückgang-Stufen** geprüft
+    (um auszuschließen, dass sie nur den Rückgang doppelt zählen) und blieben
+    dort genauso stark oder stärker bestehen - also echte, unabhängige Signale.
+    Downside-Risiko (max. Zwischenzeit-Rückgang) wurde für die GD200-Extreme
+    geprüft und ist vergleichbar, keine Sonderbehandlung nötig. Bricht mit
+    klassischer Chart-Weisheit ("kaufe nur im intakten Trend"), ist aber
+    gut durch die Daten gestützt - siehe Chat für die vollständige Herleitung.
+    """)
+
     st.markdown(f"""
-    ##### 4) Exit-Ziele: feste Prozentrendite schlägt die alte EMA50-Regel
+    ##### 5) Exit-Ziele: feste Prozentrendite schlägt die alte EMA50-Regel
     | Signal | Alte EMA50-Regel | Festes Ziel (aktuell) |
     |---|---|---|
     | Soft ({SOFT_KAUFSIGNAL_SCHWELLE:.0f}-{KAUFSIGNAL_SCHWELLE-1:.0f}) | +1,99% in 25,4 Tagen | **+{ZIEL_RENDITE_SOFT_PCT:.0f}%-Ziel: 74,7% Erreichquote in 10,0 Tagen** |
@@ -621,7 +655,7 @@ with st.expander("📈 Backtest-Erkenntnisse zum Nachlesen (Statistik)", expande
     """)
 
     st.markdown("""
-    ##### 5) Renditeprofil nach Haltedauer (unabhängig von jeder Exit-Regel)
+    ##### 6) Renditeprofil nach Haltedauer (unabhängig von jeder Exit-Regel)
     """)
     col_rp1, col_rp2 = st.columns(2)
     with col_rp1:
@@ -648,7 +682,7 @@ with st.expander("📈 Backtest-Erkenntnisse zum Nachlesen (Statistik)", expande
         """)
 
     st.markdown("""
-    ##### 6) Jahres-Robustheit
+    ##### 7) Jahres-Robustheit
     Trägt über die meisten Jahre der Historie (2009-2026), mit einer klaren
     Ausnahme: **2025 war das schwächste Jahr** (13,2% Trefferquote bei Schwelle
     75, n=38/5 Cluster) - kein Ausschlusskriterium, aber ein Hinweis, dass die
@@ -773,7 +807,6 @@ if "watchlist_signale" not in st.session_state:
             drawdown_score = data["drawdown_score"]
             drawdown_20t_pct = data["drawdown_20t_pct"]
             drawdown_atr_multiple = data["drawdown_atr_multiple"]
-            gd200_bruch_malus = data["gd200_bruch_malus_faktor"]
             regime_ok = data["regime_ok"]
             live_kurs = data["live_close"]
             live_rsi = data["live_rsi"]
@@ -819,7 +852,6 @@ if "watchlist_signale" not in st.session_state:
                 "Drawdown Score": drawdown_score,
                 "Drawdown_20t_Pct": drawdown_20t_pct,
                 "Drawdown_ATR_Multiple": drawdown_atr_multiple,
-                "GD200_Bruch_Malus": gd200_bruch_malus,
                 "Marktregime_OK": regime_ok,
                 "Zeitstempel": data["yahoo_zeit"],
                 "Ist_Kaufsignal": ist_kaufsignal,
@@ -1104,10 +1136,6 @@ with tab1:
 
             display_df["Regime"] = df_gruppe["Marktregime_OK"].map(
                 lambda ok: "🟢 ×1.00" if ok else f"🔴 ×{REGIME_MALUS_FAKTOR:.2f}"
-            )
-
-            display_df["Bruch-Malus"] = df_gruppe["GD200_Bruch_Malus"].map(
-                lambda x: f"×{x:.2f}"
             )
 
             display_df["Signal"] = [
