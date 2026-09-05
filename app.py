@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 import logging
 import warnings
 import re
+import time
 import traceback
 import pandas as pd
 import requests
@@ -193,16 +194,27 @@ def berechne_indikatoren(isin, ticker=None):
 
     data, erfolgreicher_ticker = None, None
     for ticker_symbol in kandidaten:
-        try:
-            df = yf.download(ticker_symbol, period="2y", progress=False, auto_adjust=False)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
+        # Bis zu 3 Versuche pro Ticker mit kurzer Pause dazwischen - faengt
+        # kurzzeitiges Rate-Limiting bei Yahoo ab, das v.a. durch den
+        # parallelen (ThreadPoolExecutor-)Scan der Watchlist ausgeloest
+        # werden kann. Ein sequenzieller Backtest-Lauf mit Pausen zwischen
+        # Anfragen ist davon kaum betroffen - dieselben Ticker laden dort
+        # praktisch immer erfolgreich (siehe Chat).
+        for versuch in range(3):
+            try:
+                df = yf.download(ticker_symbol, period="2y", progress=False, auto_adjust=False)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
 
-            if not df.empty and len(df) >= 200:
-                data, erfolgreicher_ticker = df, ticker_symbol
-                break
-        except Exception:
-            continue
+                if not df.empty and len(df) >= 200:
+                    data, erfolgreicher_ticker = df, ticker_symbol
+                    break
+            except Exception:
+                pass
+            if versuch < 2:
+                time.sleep(1.5)
+        if data is not None:
+            break
 
     if data is None:
         return None, (kandidaten[0] if kandidaten else "N/A")
