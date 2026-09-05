@@ -44,7 +44,6 @@ ZIEL_RENDITE_SOFT_PCT = 4.0       # Exit-Ziel für softes Signal - VOR der Schwe
                                    # nochmal zu pruefen (siehe Chat)
 ZIEL_RENDITE_VOLL_PCT = 7.0       # Exit-Ziel für volles Signal - dito, noch zu validieren
 RSI_WATCHLIST_SCHWELLE = 40.0
-REGIME_MALUS_FAKTOR = 0.8
 DRAWDOWN_SCORE_MAX = 30.0         # Cap fuer die Rueckgang-Komponente (siehe
                                    # score_am_punkt) - als Konstante, damit
                                    # Formel und Anzeige (app.py) nie auseinanderlaufen
@@ -210,9 +209,18 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
     basis_score = rsi_score + trend_score + gd200_score + ema50_score  # max. 70
     dip_score_roh = basis_score + drawdown_score  # max. 100
 
-    # 6) Marktregime-Filter
-    regime_multiplier = 1.0 if regime_ok else REGIME_MALUS_FAKTOR
-
+    # Marktregime-Malus ENTFERNT (frueher hier: ×0.8 auf den gesamten Score,
+    # wenn der Referenzindex unter seiner eigenen GD200 lag). Ein gezielter
+    # Nachtest (bei GLEICHEM Rohscore, Regime OK vs. nicht OK verglichen)
+    # zeigte: die fuer uns eigentlich relevante Zielrenditen-Quote war bei
+    # schlechtem Regime nicht schlechter, in den meisten Rohscore-Bereichen
+    # sogar leicht BESSER, und die Zielerreichung ging im Schnitt sogar
+    # SCHNELLER (nicht langsamer wie zunaechst vermutet). Nur eine an sich
+    # nicht handelsrelevante Nebenmetrik (Trefferquote nach fixen 21 Tagen,
+    # nicht Teil unserer echten zielbasierten Exit-Regel) sprach fuer den
+    # Malus - siehe Chat. Regime-Status bleibt als reine Information erhalten
+    # (regime_ok unten), beeinflusst den Score aber nicht mehr.
+    #
     # GD200-Bruch-Malus ENTFERNT (frueher hier: Punktabzug von bis zu 40%,
     # wenn der Kurs unter der GD200 lag). Basierte auf der Annahme "unter
     # GD200 = fallendes Messer, bestrafen" - genau das Gegenteil dessen, was
@@ -220,7 +228,7 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
     # der neuen, belegten Logik direkt widersprochen - kein Kompromiss
     # moeglich, deshalb komplett gestrichen statt abgeschwaecht.
 
-    dip_score = round(dip_score_roh * regime_multiplier, 1)
+    dip_score = round(dip_score_roh, 1)
 
     return {
         "close": c_today,
@@ -235,7 +243,7 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
         "gd200_score": round(gd200_score, 1),
         "ema50_score": round(ema50_score, 1),
         "drawdown_score": round(drawdown_score, 1),
-        "regime_multiplier": regime_multiplier,
+        "regime_ok": regime_ok,
         "dip_score": dip_score,
     }
 
