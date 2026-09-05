@@ -154,16 +154,34 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
     rsi_peak = 25.0
     rsi_score = max(0.0, 20.0 - abs(rsi_today - rsi_peak) * 0.8)
 
-    # 2) Trend intakt: EMA50 > GD200 UND GD200 steigt (max. 15 Punkte)
-    trend_score = (7.5 if ema50_heute > gd200_heute else 0.0) + (
-        7.5 if gd200_steigt else 0.0
+    # 2) Trend-STRUKTUR (max. 15 Punkte) - Richtung UMGEKEHRT ggue. der
+    #    urspruenglichen Annahme. Backtest zeigte sauber monoton UND
+    #    unabhaengig vom Rueckgang (innerhalb gleicher ATR-Bins geprueft):
+    #    "Trend voll intakt" (EMA50>GD200 + GD200 steigt) hatte die
+    #    SCHLECHTESTE Zielrenditen-Quote alle Kombinationen (21.8% quote_10pct
+    #    im 4+-ATR-Bin), "Trend komplett gebrochen" die BESTE (33.9%) - ein
+    #    ETF mit bereits gebrochener laengerfristiger Trendstruktur hat
+    #    vermutlich einen "reiferen", weiter fortgeschrittenen Rueckgang
+    #    hinter sich (naeher am Boden) als einer, der nur kurz aus einem
+    #    intakten Aufwaertstrend heraus dippt. Bricht mit klassischer TA-
+    #    Weisheit, aber gut durch die Daten gestuetzt (siehe Chat).
+    trend_score = (7.5 if ema50_heute < gd200_heute else 0.0) + (
+        7.5 if not gd200_steigt else 0.0
     )
 
-    # 3) Sicherheitspuffer über GD200 (max. 15 Punkte)
+    # 3) Abstand zur GD200 (max. 15 Punkte) - von linear "je hoeher desto
+    #    besser" auf ABSOLUTEN Abstand (Richtung egal) umgestellt. Backtest
+    #    zeigte eine U-Form statt einer Linie, ebenfalls unabhaengig vom
+    #    Rueckgang bestaetigt: sowohl weit UNTER der GD200 (~40-45%
+    #    quote_10pct) als auch weit UEBER ihr (~33-38%) schneiden deutlich
+    #    besser ab als der bisherige "Sweet Spot" bei +5 bis +10% (~15-24%,
+    #    der schwaechste Bereich ueberhaupt). Downside-Risiko (max.
+    #    Zwischenzeit-Ruckgang) wurde fuer beide Extreme geprueft und ist
+    #    vergleichbar - keine Sonderbehandlung fuer eine Richtung noetig.
     gd200_buffer_pct = (
         ((c_today - gd200_heute) / gd200_heute) * 100 if gd200_heute else 0.0
     )
-    gd200_score = min(15.0, max(0.0, gd200_buffer_pct) * 0.9)
+    gd200_score = min(15.0, abs(gd200_buffer_pct) * 1.0)
 
     # 4) Mean-Reversion-Potenzial bis zur EMA50 (max. 20 Punkte - erhöht,
     #    da staerkste nachgewiesene Einzelkorrelation, 0.090)
@@ -190,17 +208,14 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
     # 6) Marktregime-Filter
     regime_multiplier = 1.0 if regime_ok else REGIME_MALUS_FAKTOR
 
-    # 7) GD200-Bruch-Malus
-    gd200_bruch_pct = (
-        max(0.0, ((gd200_heute - c_today) / gd200_heute) * 100)
-        if gd200_heute
-        else 0.0
-    )
-    gd200_bruch_malus_faktor = max(0.6, 1.0 - (gd200_bruch_pct / 10.0) * 0.4)
+    # GD200-Bruch-Malus ENTFERNT (frueher hier: Punktabzug von bis zu 40%,
+    # wenn der Kurs unter der GD200 lag). Basierte auf der Annahme "unter
+    # GD200 = fallendes Messer, bestrafen" - genau das Gegenteil dessen, was
+    # der Backtest jetzt zeigt (siehe trend_score/gd200_score oben). Haette
+    # der neuen, belegten Logik direkt widersprochen - kein Kompromiss
+    # moeglich, deshalb komplett gestrichen statt abgeschwaecht.
 
-    dip_score = round(
-        dip_score_roh * regime_multiplier * gd200_bruch_malus_faktor, 1
-    )
+    dip_score = round(dip_score_roh * regime_multiplier, 1)
 
     return {
         "close": c_today,
@@ -216,7 +231,6 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
         "ema50_score": round(ema50_score, 1),
         "drawdown_score": round(drawdown_score, 1),
         "regime_multiplier": regime_multiplier,
-        "gd200_bruch_malus_faktor": round(gd200_bruch_malus_faktor, 3),
         "dip_score": dip_score,
     }
 
