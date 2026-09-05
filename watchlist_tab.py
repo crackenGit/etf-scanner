@@ -215,6 +215,12 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
             "sein eigenes Ziel erreicht hat, inkl. Ø Rendite und Stichprobengröße. "
             "Beeinflusst den Dip Score selbst nicht. Details im Statistik-Bereich oben."
         )
+        st.caption(
+            "💎 **Verstecktes Juwel:** Score reicht (noch) nicht für ein Signal, "
+            "aber die beiden stärksten bekannten Erfolgsfaktoren (ATR-Rückgang + "
+            "EMA50-Potenzial) sind schon günstig (Trefferwahrsch. ≥75%) - lohnt "
+            "einen Blick, auch ohne 🔥/🟡."
+        )
 
         col_sort1, col_sort2 = st.columns([2, 2])
         with col_sort1:
@@ -320,6 +326,20 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
             st.session_state["signale_geloggt"] = True
         signal_log_status()
 
+        VERSTECKTES_JUWEL_SCHWELLE = 75.0  # ab dieser Trefferwahrsch. gilt ein
+                                            # Nicht-Signal als "verstecktes Juwel"
+
+        def ist_verstecktes_juwel(row):
+            """Kein Kauf-/Softsignal (Score reicht nicht), aber die beiden
+            staerksten bekannten Erfolgsfaktoren (ATR-Ruckgang + EMA50) sind
+            bereits guenstig - siehe Chat: dieses Muster hielt nachweislich
+            auch unterhalb der Softsignal-Schwelle stand, keine reine
+            Extrapolation."""
+            if row["Ist_Kaufsignal"] or row["Ist_Soft_Signal"]:
+                return False
+            pct = row.get("Trefferwahrsch_Pct")
+            return pct is not None and pd.notna(pct) and pct >= VERSTECKTES_JUWEL_SCHWELLE
+
         def format_name_rank(row):
             name = row["Name"]
             rank = row["Dip_Rank"]
@@ -329,6 +349,8 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
                 praefix = "🔥 "
             elif row["Ist_Soft_Signal"]:
                 praefix = "🟡 "
+            elif ist_verstecktes_juwel(row):
+                praefix = "💎 "
             else:
                 praefix = ""
             if rank == 1:
@@ -345,6 +367,8 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
                 return "🔥 KAUFEN (Ziel ~10%+)"
             elif row["Ist_Soft_Signal"]:
                 return "🟡 Softes Signal (Ziel ~5%+)"
+            elif ist_verstecktes_juwel(row):
+                return "💎 Beobachten (hohe Trefferwahrsch.!)"
             else:
                 return "👀 Beobachten"
 
@@ -547,4 +571,3 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
                     )
     else:
         st.write("Keine ETFs in der Watchlist.")
-
