@@ -143,12 +143,26 @@ def render_statistik_tab():
     with st.expander("📈 Backtest-Erkenntnisse zum Nachlesen (Statistik)", expanded=False):
         st.caption(
             "Alle Zahlen aus dem eigenen Backtest (`backtest.py`), 277.000+ ETF-Tage, "
-            "~18 Jahre Historie, Stand nach der ATR-Formel-Umstellung. **Cluster** = "
-            "unabhängige Marktereignisse (zeitlich nah beieinanderliegende Signale "
-            "über alle Ticker hinweg zählen als 1) - die eigentlich verlässliche "
-            "Stichprobengröße, nicht die rohe Episoden-Zahl. Unter ~15-20 Clustern "
-            "sind Zahlen eher eine Tendenz als ein Beweis."
+            "~18 Jahre Historie, Stand nach der ATR-Formel-Umstellung."
         )
+
+        st.markdown("""
+        ##### 📖 Glossar
+        | Begriff | Bedeutung |
+        |---|---|
+        | **ATR** (Average True Range) | Durchschnittliche Tagesschwankung der letzten 14 Tage - misst, wie volatil ein ETF normalerweise ist |
+        | **ATR-Vielfaches** | Wie viele "ATRs" der Kurs unter seinem 20-Tage-Hoch liegt - macht Rückgänge zwischen ruhigen und volatilen ETFs vergleichbar |
+        | **GD200** | 200-Tage-Durchschnittskurs - langfristiger Trendindikator |
+        | **EMA50** | Exponentiell gewichteter 50-Tage-Durchschnitt - reagiert schneller auf aktuelle Kursbewegung als die GD200 |
+        | **RSI** (Relative Strength Index) | Momentum-Indikator (0-100); niedrige Werte deuten auf "überverkauft" hin |
+        | **Episode** | Ein zusammenhängender Zeitraum, in dem *ein* ETF ein Signal zeigt - mehrere Tage in Folge zählen als 1 |
+        | **Cluster** | Episoden *verschiedener* ETFs, die zeitlich nah beieinander liegen, zu einem Marktereignis zusammengefasst - die eigentlich unabhängige Stichprobengröße, nicht die rohe Episoden-Zahl. Unter ~15-20 Clustern: Tendenz, kein Beweis |
+        | **Dip Score / Rohscore** | Der berechnete Gesamt-Score (0-100); "Rohscore" = vor eventuellen Multiplikatoren |
+        | **Trefferquote** | Anteil der Fälle mit positiver Rendite nach fixer Haltedauer (meist 21 Tage) |
+        | **quote_Xpct** | Anteil der Fälle, die +X% *irgendwann* in 40 Handelstagen erreicht haben - unsere wichtigste Erfolgsmetrik |
+        | **Signal-Stufe (soft/voll)** | Zwei Stärkegrade des Kaufsignals mit unterschiedlichem Renditeziel (4% / 7%) |
+        | **Basisrate** | Durchschnittliche Erfolgsquote über die gesamte betrachtete Gruppe - Vergleichsmaßstab für die einzelnen Bereiche |
+        """)
 
         st.markdown(f"""
         ##### 1) Warum die Schwellen {SOFT_KAUFSIGNAL_SCHWELLE:.0f} / {KAUFSIGNAL_SCHWELLE:.0f}?
@@ -280,10 +294,21 @@ def render_statistik_tab():
 
         st.markdown("""
         ##### 8) Jahres-Robustheit
-        Trägt über die meisten Jahre der Historie (2009-2026), mit einer klaren
-        Ausnahme: **2025 war das schwächste Jahr** (13,2% Trefferquote bei Schwelle
-        75, n=38/5 Cluster) - kein Ausschlusskriterium, aber ein Hinweis, dass die
-        Strategie nicht in jeder Marktphase gleich gut funktioniert.
+        | Jahr | Trefferquote | Cluster |
+        |---|---|---|
+        | 2010 | 82,9% | 7 |
+        | 2019 | 78,7% | 10 |
+        | 2024 | 76,8% | 8 |
+        | *(Mittelfeld, 2008-2026)* | *~55-70%* | *2-13* |
+        | 2017 | 42,3% | 8 |
+        | 2009 | 43,2% | 2 (sehr dünn) |
+        | **2021** | **29,4%** | 9 |
+
+        Trägt über die meisten Jahre der Historie (2009-2026), mit 2021 als
+        bisher schwächstem, einigermaßen verlässlichem Jahr. Die meisten
+        Einzeljahre haben unter 15 Cluster - **einzelne Jahre sind eher
+        Tendenz als Beweis**. Die gepoolte Auswertung über alle ~18 Jahre
+        (140+ Cluster, siehe Abschnitt 1) bleibt die robustere Zahl.
         """)
 
         st.markdown("""
@@ -326,6 +351,15 @@ def render_statistik_tab():
         Dip Score selbst ein, sondern steht als eigene, unabhängige Information
         daneben (siehe `trefferwahrscheinlichkeit.py`) - der Score beantwortet
         "ist das ein Signal", diese Spalte "wie sehr vertraue ich diesem Signal".
+
+        **Gilt das Muster auch unterhalb der Softsignal-Schwelle?** Geprüft:
+        dieselbe Kreuztabelle bei Score 40-65 (12.410 Episoden, quote_5pct statt
+        eigenem Ziel) zeigt fast identische Werte (z.B. ATR 0-3/EMA50 hoch:
+        90,2% vs. 91,5%) - **kein reiner Extrapolations-Kunstgriff**. Deshalb
+        gibt es jetzt das 💎-Symbol: Kandidaten ohne Signal, aber mit
+        Trefferwahrsch. ≥75%, werden in der Watchlist als "verstecktes Juwel"
+        markiert - der Score reicht noch nicht, aber die zwei stärksten
+        bekannten Erfolgsfaktoren stimmen schon.
         """)
 
         st.caption(
