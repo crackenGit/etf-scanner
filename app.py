@@ -278,6 +278,17 @@ def berechne_indikatoren(isin, ticker=None):
     regime_ok = markt_regime_ok()
     score_ergebnis = score_am_punkt(indikatoren, -1, regime_ok=regime_ok)
 
+    # Absicherung: GD200 kann trotz >=200 Rohzeilen NaN bleiben, wenn
+    # innerhalb des 200-Tage-Fensters Kurslücken bestehen (z.B. lückenhafte
+    # Yahoo-Daten zu fruehen Uhrzeiten, oder knapp zu kurze echte Historie).
+    # dip_score.py faengt NaN intern mit einem 0.0-Platzhalter ab, damit die
+    # Score-Formel nicht selbst abstuerzt - aber 0.0 ist kein gueltiger
+    # GD200-Wert und wuerde downstream (Anzeige, Prozent-Berechnungen) zu
+    # Divisionen durch Null fuehren. Deshalb hier explizit als fehlgeschlagen
+    # behandeln, statt mit einem unbrauchbaren Platzhalter weiterzurechnen.
+    if score_ergebnis["gd200"] == 0.0:
+        return None, erfolgreicher_ticker
+
     c_today = score_ergebnis["close"]
     rsi_today = float(indikatoren["rsi"].iloc[-1])
 
