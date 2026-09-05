@@ -76,6 +76,9 @@ def fuehre_scan_durch(etfs, portfolio_isins):
                 drawdown_score = data["drawdown_score"]
                 drawdown_20t_pct = data["drawdown_20t_pct"]
                 drawdown_atr_multiple = data["drawdown_atr_multiple"]
+                trefferwahrsch_pct = data.get("trefferwahrscheinlichkeit_pct")
+                trefferwahrsch_rendite = data.get("trefferwahrscheinlichkeit_rendite")
+                trefferwahrsch_n = data.get("trefferwahrscheinlichkeit_n", 0)
                 regime_ok = data["regime_ok"]
                 regime_seit_tagen = data.get("regime_seit_tagen")
                 ist_stale = data.get("ist_stale", False)
@@ -124,6 +127,9 @@ def fuehre_scan_durch(etfs, portfolio_isins):
                     "Drawdown Score": drawdown_score,
                     "Drawdown_20t_Pct": drawdown_20t_pct,
                     "Drawdown_ATR_Multiple": drawdown_atr_multiple,
+                    "Trefferwahrsch_Pct": trefferwahrsch_pct,
+                    "Trefferwahrsch_Rendite": trefferwahrsch_rendite,
+                    "Trefferwahrsch_N": trefferwahrsch_n,
                     "Marktregime_OK": regime_ok,
                     "Marktregime_Seit_Tagen": regime_seit_tagen,
                     "Ist_Stale": ist_stale,
@@ -199,7 +205,15 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
             "🟪 Lila: Im Portfolio | "
             "RSI: 🟩 ≤31.9, ⬜ 32-35, 🟥 >35 | "
             "Live: 🟩 RSI-Tendenz ↑ (Erholung), ⬜ unverändert, 🟥 RSI-Tendenz ↓ (noch fallend) | "
-            "GD200: 🟩 klar drüber, ⬜ knapp (≤1%), 🟥 drunter"
+            "GD200: 🟩 klar drüber, ⬜ knapp (≤1%), 🟥 drunter | "
+            "Trefferwahrsch.: 🟩 ≥75%, ⬜ 60-75%, 🟥 <60%"
+        )
+        st.caption(
+            "🎯 **Trefferwahrscheinlichkeit** ist ein zweites, vom Dip Score "
+            "komplett getrenntes Modell - schätzt anhand von ATR-Rückgang und "
+            "EMA50-Potenzial, wie oft ein *bereits ausgelöstes* Signal historisch "
+            "sein eigenes Ziel erreicht hat, inkl. Ø Rendite und Stichprobengröße. "
+            "Beeinflusst den Dip Score selbst nicht. Details im Statistik-Bereich oben."
         )
 
         col_sort1, col_sort2 = st.columns([2, 2])
@@ -401,6 +415,16 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
                 axis=1,
             )
 
+            def format_trefferwahrsch(r):
+                pct = r["Trefferwahrsch_Pct"]
+                if pct is None or pd.isna(pct):
+                    return "– (zu wenig Daten)"
+                rendite = r["Trefferwahrsch_Rendite"]
+                vorzeichen = "+" if rendite >= 0 else ""
+                return f"{pct:.0f}% (Ø {vorzeichen}{rendite:.1f}%, n={int(r['Trefferwahrsch_N'])})"
+
+            display_df["Trefferwahrsch."] = df_gruppe.apply(format_trefferwahrsch, axis=1)
+
             display_df["Regime"] = df_gruppe["Marktregime_OK"].map(
                 lambda ok: "🐂 Bulle" if ok else "🐻 Bär"
             )
@@ -467,6 +491,15 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
                         styles.loc[idx, "GD200"] = "background-color: #d4edda; color: #155724;"
 
                     styles.loc[idx, "Dip Score"] = "font-weight: bold; text-align: center;"
+
+                    trefferwahrsch_pct = row_raw.get("Trefferwahrsch_Pct")
+                    if trefferwahrsch_pct is not None and pd.notna(trefferwahrsch_pct):
+                        if trefferwahrsch_pct >= 75:
+                            styles.loc[idx, "Trefferwahrsch."] = "background-color: #d4edda; color: #155724; font-weight: bold;"
+                        elif trefferwahrsch_pct >= 60:
+                            styles.loc[idx, "Trefferwahrsch."] = "background-color: #e2e3e5; color: #383d41;"
+                        else:
+                            styles.loc[idx, "Trefferwahrsch."] = "background-color: #f8d7da; color: #721c24;"
 
                 return styles
 
