@@ -753,30 +753,44 @@ with st.sidebar.expander("🔍 Debug: Einzelne ISIN prüfen"):
         debug_data, debug_used_ticker, debug_fehler = berechne_indikatoren(
             debug_isin.strip(), debug_ticker
         )
+        anzeige_ticker = debug_used_ticker or debug_ticker
+
         if debug_data:
             st.write(f"Aufgelöster Ticker: `{debug_used_ticker}`")
             st.write(
                 f"Kurs: **{debug_data['close']:.2f}** | "
                 f"RSI: **{debug_data['rsi']:.2f}**"
             )
+        else:
+            st.error(f"Score nicht berechenbar. Grund: {debug_fehler}")
+
+        # Rohdaten-Diagnose laeuft IMMER, auch wenn der Score oben fehlschlug -
+        # genau dafuer gedacht (siehe Chat: "GD200 nicht berechenbar" nur ueber
+        # die Fehlermeldung zu sehen, hilft nicht zu verstehen WO im 200-Tage-
+        # Fenster die Luecke tatsaechlich sitzt).
+        if anzeige_ticker:
             try:
                 raw = yf.download(
-                    debug_used_ticker,
-                    period="15d",
-                    progress=False,
-                    auto_adjust=False,
+                    anzeige_ticker, period="2y", progress=False, auto_adjust=False
                 )
                 if isinstance(raw.columns, pd.MultiIndex):
                     raw.columns = raw.columns.get_level_values(0)
-                st.caption("Rohdaten der letzten Handelstage (Close vs. Adj Close):")
-                st.dataframe(
-                    raw[["Close", "Adj Close"]].tail(10),
-                    use_container_width=True,
+
+                gesamt_zeilen = len(raw)
+                close_gueltig = int(raw["Close"].notna().sum())
+                close_nan = int(raw["Close"].isna().sum())
+                letzte_200_gueltig = int(raw["Close"].tail(200).notna().sum())
+
+                st.caption(
+                    f"**Rohdaten-Diagnose ({anzeige_ticker}):** {gesamt_zeilen} Zeilen "
+                    f"gesamt, davon {close_gueltig} gültig / {close_nan} NaN. "
+                    f"In den letzten 200 Zeilen: {letzte_200_gueltig} gültig "
+                    f"(mind. 190 nötig für GD200)."
                 )
+                st.caption("Letzte 20 Handelstage (Close) - NaN-Lücken sind hier direkt sichtbar:")
+                st.dataframe(raw[["Close"]].tail(20), use_container_width=True)
             except Exception as e:
                 st.error(f"Rohdaten-Abruf fehlgeschlagen: {e}")
-        else:
-            st.error(f"Keine Daten für diese ISIN/diesen Ticker gefunden. Grund: {debug_fehler}")
 
 etfs = parse_isin_file("isin.txt")
 sektor_lookup = {e["isin"]: e["sektor"] for e in etfs}
