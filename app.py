@@ -1104,8 +1104,8 @@ with tab1:
 
             display_df["Trend"] = df_gruppe.apply(
                 lambda r: (
-                    ("✅" if r["EMA50"] > r["GD200"] else "❌")
-                    + ("✅" if r["GD200_steigt"] else "❌")
+                    ("↓" if r["EMA50"] < r["GD200"] else "↑")
+                    + ("↓" if not r["GD200_steigt"] else "↑")
                     + f" {r['Trend_Score']:.0f}/15"
                 ),
                 axis=1,
@@ -1205,6 +1205,13 @@ with tab1:
 
             styled_df = display_df.style.apply(style_watchlist_cells, axis=None)
             st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+        st.caption(
+            "↓↓ in der Trend-Spalte bedeutet volle Punktzahl (gebrochene "
+            "Trendstruktur), ↑↑ bedeutet 0 Punkte - **umgekehrt** zur "
+            "klassischen Lesart von 'Trend intakt = gut'. Details dazu oben "
+            "unter 'Wann entsteht ein Kaufsignal?'."
+        )
 
         # --- Sektor-gruppierte Anzeige der "neuen Chancen" ---
         if not df_neu.empty:
