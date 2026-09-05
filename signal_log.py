@@ -35,7 +35,7 @@ SIGNAL_LOG_SPALTEN = [
     "Datum", "Zeitstempel", "ISIN", "Ticker", "Name", "Sektor", "Kurs",
     "Dip_Score", "Signal_Stufe", "RSI_Score", "Trend_Score", "GD200_Score",
     "EMA50_Score", "Drawdown_Score", "Ist_Portfolio", "Ausgeblendet",
-    "Ausblend_Grund", "Formel_Version",
+    "Ausblend_Grund", "Formel_Version", "Trefferwahrsch_Pct", "Trefferwahrsch_Rendite",
 ]
 
 
@@ -142,6 +142,8 @@ def logge_signale(df_watch):
                 bool(row["Ausgeblendet"]),
                 row["Ausblend_Grund"],
                 FORMEL_VERSION,
+                row["Trefferwahrsch_Pct"] if row["Trefferwahrsch_Pct"] is not None else "",
+                row["Trefferwahrsch_Rendite"] if row["Trefferwahrsch_Rendite"] is not None else "",
             ])
 
         if neue_zeilen:
