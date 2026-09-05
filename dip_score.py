@@ -29,6 +29,13 @@ Streamlit-Kontext importieren lässt.
 
 import pandas as pd
 
+# Versions-Kennung der Score-Formel - bei jeder inhaltlichen Aenderung an
+# score_am_punkt() hochzaehlen/anpassen. Wird ins Forward-Tracking-Log
+# (app.py) mitgeschrieben, damit alte Log-Zeilen nie geloescht werden
+# muessen, nur weil sich die Formel seither geaendert hat - stattdessen
+# bleibt nachvollziehbar, welche Formel-Version welches Signal erzeugt hat.
+FORMEL_VERSION = "v3_trend-gd200-invertiert_2026-09"
+
 # ==========================================
 # KONFIGURATION (identisch zu app.py - dort werden dieselben Werte
 # verwendet; falls in app.py angepasst, hier synchron halten)
