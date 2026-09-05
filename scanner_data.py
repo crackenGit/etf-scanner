@@ -29,6 +29,7 @@ from dip_score import (
     score_am_punkt,
     MARKT_BENCHMARK_TICKER,
 )
+from trefferwahrscheinlichkeit import schaetze_trefferwahrscheinlichkeit
 
 # ==========================================
 # MANUELLE TICKER-ZUORDNUNG (Fallback)
@@ -337,6 +338,13 @@ def berechne_indikatoren(isin, ticker=None):
         close_1w = float(close.iloc[-6])
         perf_1w = ((c_today - close_1w) / close_1w) * 100
 
+    # --- ZWEITES, GETRENNTES MODELL: Trefferwahrscheinlichkeit ---
+    # Bewusst NICHT Teil des Dip Score - siehe trefferwahrscheinlichkeit.py
+    # und Chat fuer die Herleitung ("Meta-Labeling").
+    trefferwahrsch_pct, trefferwahrsch_rendite, trefferwahrsch_n = schaetze_trefferwahrscheinlichkeit(
+        score_ergebnis["drawdown_atr_multiple"], score_ergebnis["ema50_score"]
+    )
+
     ergebnis = {
         "close": c_today,
         "rsi": rsi_today,
@@ -357,6 +365,9 @@ def berechne_indikatoren(isin, ticker=None):
         "drawdown_score": score_ergebnis["drawdown_score"],
         "drawdown_20t_pct": score_ergebnis["drawdown_20t_pct"],
         "drawdown_atr_multiple": score_ergebnis["drawdown_atr_multiple"],
+        "trefferwahrscheinlichkeit_pct": trefferwahrsch_pct,
+        "trefferwahrscheinlichkeit_rendite": trefferwahrsch_rendite,
+        "trefferwahrscheinlichkeit_n": trefferwahrsch_n,
         "regime_ok": regime_ok,
         "regime_seit_tagen": regime_seit_tagen,
         "yahoo_zeit": yahoo_zeit,
