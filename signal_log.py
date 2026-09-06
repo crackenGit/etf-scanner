@@ -36,7 +36,17 @@ SIGNAL_LOG_SPALTEN = [
     "Dip_Score", "Signal_Stufe", "RSI_Score", "Trend_Score", "GD200_Score",
     "EMA50_Score", "Drawdown_Score", "Ist_Portfolio", "Ausgeblendet",
     "Ausblend_Grund", "Formel_Version", "Trefferwahrsch_Pct", "Trefferwahrsch_Rendite",
+    "Gruppe",
 ]
+
+KONTROLLGRUPPE_GROESSE = 5  # Anzahl der taeglich zusaetzlich geloggten "besten Nicht-
+                             # Signale" (Score unter der Schwelle, aber schon RSI<40-
+                             # Kandidat) - siehe Chat: sonst sehen wir nie, ob ETFs knapp
+                             # unterhalb der Schwelle sich ebenfalls bewaehrt haetten
+                             # (reine Praezision statt echter Trennschaerfen-Pruefung).
+                             # NEUE Spalte bewusst ANS ENDE gehaengt, nicht dazwischen -
+                             # sonst wuerden sich bei bestehenden Sheet-Zeilen alle
+                             # nachfolgenden Werte verschieben (siehe Chat).
 
 
 @st.cache_resource
@@ -98,9 +108,12 @@ def signal_log_status():
 def logge_signale(df_watch):
     """Schreibt jedes echte Signal (soft/voll) des aktuellen Scans als neue
     Zeile ins Google-Sheet-Log - inklusive ob/warum der Diversifikations-
-    Filter es ausgeblendet hat. Best-effort: Fehler hier duerfen die App nie
-    zum Absturz bringen. Dedupliziert gegen bereits heute geloggte ISINs,
-    damit mehrfaches Neuladen am selben Tag keine Duplikate erzeugt."""
+    Filter es ausgeblendet hat. Zusaetzlich: die besten KONTROLLGRUPPE_GROESSE
+    Nicht-Signale des Tages (siehe Chat) - ohne die koennten wir nie pruefen,
+    ob die Schwelle wirklich sinnvoll trennt oder ob knapp darunter liegende
+    ETFs sich ebenso bewaehrt haetten. Best-effort: Fehler hier duerfen die
+    App nie zum Absturz bringen. Dedupliziert gegen bereits heute geloggte
+    ISINs, damit mehrfaches Neuladen am selben Tag keine Duplikate erzeugt."""
     sheet = hole_signal_sheet()
     if sheet is None:
         return
@@ -117,13 +130,8 @@ def logge_signale(df_watch):
         except Exception:
             pass
 
-        neue_zeilen = []
-        for _, row in df_watch.iterrows():
-            if not (row["Ist_Kaufsignal"] or row["Ist_Soft_Signal"]):
-                continue
-            if row["ISIN"] in bestehende_isins_heute:
-                continue
-            neue_zeilen.append([
+        def zeile_bauen(row, gruppe, signal_stufe):
+            return [
                 heute,
                 row["Zeitstempel"],
                 row["ISIN"],
@@ -132,19 +140,44 @@ def logge_signale(df_watch):
                 row["Sektor"],
                 round(row["Kurs"], 2),
                 row["Dip Score"],
-                "voll" if row["Ist_Kaufsignal"] else "soft",
+                signal_stufe,
                 row["RSI_Score"],
                 row["Trend_Score"],
                 row["GD200_Score"],
                 row["EMA50_Score"],
                 row["Drawdown Score"],
                 bool(row["Ist_Portfolio"]),
-                bool(row["Ausgeblendet"]),
-                row["Ausblend_Grund"],
+                bool(row.get("Ausgeblendet", False)),
+                row.get("Ausblend_Grund", ""),
                 FORMEL_VERSION,
                 row["Trefferwahrsch_Pct"] if row["Trefferwahrsch_Pct"] is not None else "",
                 row["Trefferwahrsch_Rendite"] if row["Trefferwahrsch_Rendite"] is not None else "",
-            ])
+                gruppe,
+            ]
+
+        neue_zeilen = []
+
+        # 1) Echte Signale (soft/voll) - wie bisher
+        for _, row in df_watch.iterrows():
+            if not (row["Ist_Kaufsignal"] or row["Ist_Soft_Signal"]):
+                continue
+            if row["ISIN"] in bestehende_isins_heute:
+                continue
+            signal_stufe = "voll" if row["Ist_Kaufsignal"] else "soft"
+            neue_zeilen.append(zeile_bauen(row, "Signal", signal_stufe))
+
+        # 2) Kontrollgruppe: die besten Nicht-Signale des Tages (siehe Chat) -
+        # bereits RSI<40-Kandidaten (df_watch ist darauf vorgefiltert), aber
+        # unter der Score-Schwelle geblieben. Zeigt langfristig, ob die
+        # Schwelle sinnvoll trennt oder ob wir knapp darunter Chancen verpassen.
+        nicht_signale = df_watch[
+            ~(df_watch["Ist_Kaufsignal"] | df_watch["Ist_Soft_Signal"])
+        ].copy()
+        nicht_signale = nicht_signale[~nicht_signale["ISIN"].isin(bestehende_isins_heute)]
+        nicht_signale = nicht_signale.sort_values("Dip Score", ascending=False).head(KONTROLLGRUPPE_GROESSE)
+
+        for _, row in nicht_signale.iterrows():
+            neue_zeilen.append(zeile_bauen(row, "Kontrollgruppe", "kein_signal"))
 
         if neue_zeilen:
             sheet.append_rows(neue_zeilen)
