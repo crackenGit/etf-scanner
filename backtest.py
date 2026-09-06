@@ -790,6 +790,130 @@ def gd200_puffer_bin_analyse(df, bins=GD200_PUFFER_BINS):
     return pd.DataFrame(zeilen)
 
 
+def gewichte_sweep(df, kombinationen, ziel_episoden_n=None, korr_spalte="return_21t"):
+    """Testet mehrere alternative Gewichtungen der fuenf Score-Komponenten
+    gegeneinander und gegen den reinen EMA50-Filter (siehe Chat: ema50_score
+    hatte mit Abstand die staerkste Einzelkorrelation, 0.091 vs. 0.050 fuer
+    RSI und ~0.025-0.027 fuer Trend/GD200/Drawdown - additive Kombination
+    koennte das starke Signal verwaesserm).
+
+    'kombinationen' ist ein Dict {name: {komponente: multiplikator}} -
+    Multiplikatoren wirken auf die bereits 0-Max-skalierten Komponenten
+    (rsi_score, trend_score, gd200_score, ema50_score, drawdown_score).
+    Fehlende Komponenten in einer Kombination werden mit 1.0 angenommen.
+
+    Fairer Vergleich ueber die AUSWAHLGROESSE: fuer jede Kombination werden
+    die 'ziel_episoden_n' besten Tage nach neuem Score ausgewaehlt (Default:
+    Anzahl der Tage mit dip_score >= KAUFSIGNAL_SCHWELLE) - damit hat jede
+    Kombination die gleiche Selektivitaet, nicht einen willkuerlich anderen
+    Schwellenwert.
+
+    Nur ein grobes, bewusst kleines Raster testen (siehe Chat) - dies ist
+    IMMER NOCH eine In-Sample-Pruefung auf demselben Datensatz, keine
+    unabhaengige Bestaetigung. Das Forward-Tracking-Log bleibt der
+    eigentliche Here-and-now-Test."""
+    komponenten = ["rsi_score", "trend_score", "gd200_score", "ema50_score", "drawdown_score"]
+
+    if ziel_episoden_n is None:
+        ziel_episoden_n = int((df["dip_score"] >= KAUFSIGNAL_SCHWELLE).sum())
+
+    basis = df.dropna(subset=komponenten + [korr_spalte, "erreicht_10pct", "datum"]).copy()
+
+    zeilen = []
+    for name, multiplikatoren in kombinationen.items():
+        neuer_score = pd.Series(0.0, index=basis.index)
+        for komp in komponenten:
+            mult = multiplikatoren.get(komp, 1.0)
+            neuer_score = neuer_score + basis[komp] * mult
+
+        top_n = neuer_score.nlargest(ziel_episoden_n).index
+        auswahl = basis.loc[top_n]
+
+        maske = pd.Series(False, index=df.index)
+        maske.loc[auswahl.index] = True
+        episoden = episoden_aus_maske(df, maske)
+        episoden = episoden.dropna(subset=["erreicht_10pct"])
+        if episoden.empty:
+            continue
+        geclustert = cluster_zuweisen(episoden)
+        n_cluster = geclustert["cluster_id"].nunique()
+        quote_pro_cluster = geclustert.groupby("cluster_id")["erreicht_10pct"].mean().mean()
+
+        schlechtestes_drittel_n = max(1, len(episoden) // 3)
+        verlust_tiefe = episoden["return_21t"].nsmallest(schlechtestes_drittel_n).mean()
+
+        zeilen.append({
+            "kombination": name,
+            "anzahl_episoden": len(episoden),
+            "anzahl_cluster": n_cluster,
+            "quote_10pct_roh": round(episoden["erreicht_10pct"].mean() * 100, 1),
+            "quote_10pct_clustergewichtet": round(quote_pro_cluster * 100, 1),
+            "verlust_tiefe_schlechtestes_drittel_pct": round(verlust_tiefe, 2),
+        })
+
+    return pd.DataFrame(zeilen).sort_values("quote_10pct_clustergewichtet", ascending=False).reset_index(drop=True)
+
+
+def berechne_rsi_periode(close, periode):
+    """RSI mit Wilder-Glaettung fuer eine beliebige Periode - fuer den
+    Perioden-Vergleich unten. Identische Methodik wie die fest auf 14
+    codierte Berechnung in dip_score.py (Wilder-EWM), nur parametrisiert."""
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -1 * delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / periode, min_periods=periode, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / periode, min_periods=periode, adjust=False).mean()
+    return 100 - (100 / (1 + (avg_gain / avg_loss)))
+
+
+def rsi_perioden_screening(df, serien_cache, perioden=(5, 7, 9, 11, 14, 18, 21, 25, 30)):
+    """Prueft, ob eine ANDERE RSI-Periode als die verwendete 14 staerker mit
+    Erfolg zusammenhaengt. RSI war der urspruengliche Hauptindikator des
+    ganzen Projekts, wurde aber bisher nur punktuell gegen Connors RSI(2)
+    getestet (siehe backtest_rsi2.py), nie systematisch gegen ein Perioden-
+    Raster dazwischen (siehe Chat).
+
+    Fuer jede Periode: Korrelation mit return_21t (ganzes Universum) UND
+    quote_10pct fuer den simplen Trigger RSI<30 bzw. RSI<25 - direkt
+    vergleichbar mit den anderen Einzelfaktor-Tests."""
+    basis = df.dropna(subset=["ticker", "datum", "return_21t", "erreicht_10pct"]).copy()
+    basis["datum"] = pd.to_datetime(basis["datum"])
+
+    zeilen = []
+    for periode in perioden:
+        teile = []
+        for ticker, serien in serien_cache.items():
+            rsi_serie = berechne_rsi_periode(serien["close"], periode)
+            teil_df = rsi_serie.rename(f"rsi_p{periode}").reset_index()
+            teil_df.columns = ["datum", f"rsi_p{periode}"]
+            teil_df["ticker"] = ticker
+            teile.append(teil_df)
+        if not teile:
+            continue
+        rsi_alle = pd.concat(teile, ignore_index=True)
+        rsi_alle["datum"] = pd.to_datetime(rsi_alle["datum"])
+
+        merged = basis.merge(rsi_alle, on=["ticker", "datum"], how="left")
+        teil = merged.dropna(subset=[f"rsi_p{periode}"])
+        if teil.empty:
+            continue
+
+        korr = teil[f"rsi_p{periode}"].corr(teil["return_21t"])
+        unter_30 = teil[teil[f"rsi_p{periode}"] < 30]
+        unter_25 = teil[teil[f"rsi_p{periode}"] < 25]
+
+        zeilen.append({
+            "periode": periode,
+            "korrelation_mit_return21t": round(korr, 3) if pd.notna(korr) else None,
+            "n_rsi_unter_30": len(unter_30),
+            "quote_10pct_rsi_unter_30": round(unter_30["erreicht_10pct"].mean() * 100, 1) if len(unter_30) > 0 else None,
+            "n_rsi_unter_25": len(unter_25),
+            "quote_10pct_rsi_unter_25": round(unter_25["erreicht_10pct"].mean() * 100, 1) if len(unter_25) > 0 else None,
+        })
+
+    return pd.DataFrame(zeilen)
+
+
 def signal_qualitaet_screening(df):
     """Screent ALLE verfuegbaren Merkmale eines Kaufsignals (Score >=
     SOFT_KAUFSIGNAL_SCHWELLE) danach, wie stark sie mit dem tatsaechlichen
@@ -1314,6 +1438,24 @@ def main():
     print("schwaechstem Bereich eines Merkmals, in Prozentpunkten. Je groesser,")
     print("desto staerker haengt Erfolg/Misserfolg mit diesem Merkmal zusammen.")
     print("n_gesamt < ~30-40 Episoden: Tendenz, kein Beweis.")
+
+    print(f"\n{'=' * 60}")
+    print("RSI-PERIODEN-VERGLEICH: ist 14 die richtige Wahl?")
+    print(f"{'=' * 60}")
+    print("Bisher nur punktuell gegen Connors RSI(2) getestet, nie gegen ein")
+    print("Perioden-Raster dazwischen (siehe Chat).\n")
+    rsi_perioden_df = rsi_perioden_screening(df, serien_cache)
+    if not rsi_perioden_df.empty:
+        print(rsi_perioden_df.to_string(index=False))
+        rsi_perioden_df.to_csv("backtest_rsi_perioden.csv", index=False)
+        print("\n(gespeichert in backtest_rsi_perioden.csv)")
+    else:
+        print("Keine auswertbaren Daten fuer den Perioden-Vergleich.")
+    print("\nHinweis: Korrelation ist NEGATIV zu erwarten (niedriger RSI ->")
+    print("hoehere Folgerendite) - staerker negativ = aussagekraeftiger.")
+    print("quote_10pct-Spalten nutzen RSI<30 bzw. RSI<25 als einzigen,")
+    print("simplen Trigger - kleinere n bei laengeren Perioden sind normal")
+    print("(seltener, dass ein traegerer RSI so tief faellt).")
 
     print(f"\n{'-' * 60}")
     print(f"FRAGE 2: Haltedauer vs. Verkaufskurs (Episoden bei Schwelle {KAUFSIGNAL_SCHWELLE:.0f})")
