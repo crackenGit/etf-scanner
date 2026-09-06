@@ -24,33 +24,48 @@ def render_kaufsignal_erklaerung():
     with st.expander("ℹ️ Wann entsteht ein Kaufsignal? (Hier klicken)"):
         st.markdown(f"""
         ### 🎯 Zwei Signalstufen statt Ja/Nein
-        Es gibt keinen separaten Ja/Nein-Filter - alle Kriterien (RSI, Trend,
-        Kursrückgang, Marktumfeld) fließen in **einen einzigen Score** von
-        maximal 100 Punkten ein. Der Backtest über ~277.000 ETF-Tage zeigt
+        Es gibt keinen separaten Ja/Nein-Filter - alle Kriterien (RSI,
+        Kursrückgang, GD200-Abstand, EMA50-Potenzial) fließen in **einen
+        einzigen Score** von maximal **85 Punkten** ein (Stand nach der
+        v4-Formel, siehe unten). Der Backtest über ~277.000 ETF-Tage zeigt
         zwei sinnvolle Schwellen mit unterschiedlicher Renditeerwartung:
 
-        | Stufe | Score | Backtest-Trefferquote (40 Handelstage) |
+        | Stufe | Score | Backtest-Chance auf +10% binnen 40 Tagen |
         |---|---|---|
-        | 🟡 Softes Signal | {SOFT_KAUFSIGNAL_SCHWELLE:.0f}-{KAUFSIGNAL_SCHWELLE - 1:.0f} | ~69% erreichen +5% |
-        | 🔥 Kaufsignal | ≥ {KAUFSIGNAL_SCHWELLE:.0f} | ~56% erreichen +10% |
+        | 🟡 Softes Signal | {SOFT_KAUFSIGNAL_SCHWELLE:.0f}-{KAUFSIGNAL_SCHWELLE - 1:.0f} | ~56% |
+        | 🔥 Kaufsignal | ≥ {KAUFSIGNAL_SCHWELLE:.0f} | ~68% |
 
         Bei der Order lohnt es sich, die Stufe zu notieren (z. B. in
-        `portfolio.py`) - ein softes Signal rechtfertigt eher ein niedrigeres
-        Ziel (~5%) als ein volles Kaufsignal (~10%).
+        `portfolio.py`) - ein softes Signal rechtfertigt ein niedrigeres Ziel
+        (~{ZIEL_RENDITE_SOFT_PCT:.0f}%) als ein volles Kaufsignal (~{ZIEL_RENDITE_VOLL_PCT:.0f}%).
 
         | Komponente | Max. Punkte | Was gemessen wird |
         |---|---|---|
         | RSI-Sweet-Spot | 20 | Abstand zu RSI 25 (siehe unten) |
-        | Trend-Struktur | 15 | EMA50 **unter** GD200 **oder** GD200 fällt (siehe unten - Logik bewusst umgekehrt) |
         | Abstand zur GD200 | 15 | Distanz zur GD200, **Richtung egal** (siehe unten) |
         | Mean-Reversion-Potenzial | 20 | Rebound-Distanz bis zur EMA50 |
         | **Kursrückgang-Tiefe (ATR)** | **30** | Wie stark der Kurs vor dem Signal fiel, volatilitätsbereinigt |
 
         **Wichtig:** Ohne nennenswerten vorherigen Kursrückgang sind maximal
-        **70** der 100 Punkte erreichbar (RSI + Trend + GD200-Abstand +
+        **55** der 85 Punkte erreichbar (RSI + GD200-Abstand +
         EMA50-Potenzial). Ein Kaufsignal ab {KAUFSIGNAL_SCHWELLE:.0f} Punkten
         ist damit rechnerisch nur möglich, wenn der Kurs auch tatsächlich
         spürbar gefallen ist.
+
+        ### 🔄 Ein früherer Trend-Faktor wurde entfernt
+        Bis vor Kurzem gab es eine fünfte Komponente ("Trend-Struktur",
+        max. 15 Punkte), die einen gebrochenen Trend belohnte - ein
+        gezielter Nachtest zeigte zwar, dass gebrochener Trend für sich
+        genommen mit besseren Ergebnissen einherging, aber ein **Ablationstest
+        mit Zeit-Split** (Formel nur mit alten Daten festgelegt, dann auf
+        nie angeschauten neueren Daten geprüft) zeigte: Das Entfernen dieser
+        Komponente verbesserte das Gesamtergebnis in **beiden** Zeiträumen
+        spürbar (Trainingszeitraum wie auch der unabhängige Test-Zeitraum).
+        Sie trug in der Summe offenbar mehr Rauschen als Trennschärfe bei -
+        vermutlich, weil sie sich mit GD200-Abstand/Drawdown überschneidet.
+        Die zugrundeliegende Information (Trend gebrochen/intakt) wird in
+        der Watchlist weiterhin als reine Zusatzinfo angezeigt, zählt aber
+        nicht mehr zum Score.
 
         ### 🎯 RSI-Sweet-Spot statt "je tiefer desto besser"
         Der Backtest zeigte einen Peak bei RSI 20-30 - RSI unter 20 performte
@@ -59,22 +74,15 @@ def render_kaufsignal_erklaerung():
         Seiten linear ab, statt einfach mit sinkendem RSI immer weiter zu
         steigen.
 
-        ### 🔄 Trend-Struktur & GD200-Abstand - Logik bewusst umgekehrt
-        Ursprünglich belohnte der Score einen "intakten" Aufwärtstrend (EMA50
-        über GD200, GD200 steigend) und einen möglichst großen Puffer *über*
-        der GD200. Ein gezielter Nachtest (innerhalb gleicher Rückgangstiefe-
-        Stufen, um einen Doppel-Zähl-Effekt auszuschließen) zeigte das
-        **Gegenteil**: ETFs mit bereits **gebrochener** Trendstruktur
-        schnitten in jeder geprüften Rückgangs-Kategorie besser ab (z. B. 33,9%
-        vs. 21,8% Chance auf +10% bei starkem Rückgang) - vermutlich, weil ein
-        gebrochener Trend einen "reiferen", weiter fortgeschrittenen Rückgang
-        anzeigt, näher am Boden. Beim GD200-Abstand zeigte sich zusätzlich eine
-        **U-Form** statt einer Linie: sowohl weit unter als auch weit über der
-        GD200 schnitten deutlich besser ab als der ehemalige "Sweet Spot" bei
-        +5 bis +10% (dem schwächsten Bereich überhaupt). Das Downside-Risiko
-        wurde für beide Extreme geprüft und ist vergleichbar - keine
-        Sonderbehandlung einer Richtung nötig. Bricht mit klassischer
-        Chart-Weisheit, ist aber gut durch die Daten gestützt.
+        ### 🔄 GD200-Abstand - Logik bewusst umgekehrt
+        Ursprünglich belohnte der Score einen möglichst großen Puffer *über*
+        der GD200. Der Backtest zeigte stattdessen eine **U-Form**: sowohl
+        weit unter als auch weit über der GD200 schnitten deutlich besser ab
+        als der ehemalige "Sweet Spot" bei +5 bis +10% (dem schwächsten
+        Bereich überhaupt). Das Downside-Risiko wurde für beide Extreme
+        geprüft und ist vergleichbar - keine Sonderbehandlung einer Richtung
+        nötig. Bricht mit klassischer Chart-Weisheit, ist aber gut durch die
+        Daten gestützt.
 
         ### 📉 Kursrückgang-Tiefe (ATR-normalisiert, größte Einzelkomponente)
         Rückgang vom 20-Tage-Hoch bis heute, gemessen in Vielfachen des
@@ -82,7 +90,17 @@ def render_kaufsignal_erklaerung():
         stärkste Einzelsignal, aber stark sektor-/volatilitätsverzerrt (rohe
         -30%-Rückgänge kommen fast nur bei volatilen Sektoren wie Halbleiter
         vor). Nach ATR-Normierung bleibt ein kleinerer, aber sauberer,
-        sektor-fairer Effekt. Volle Punktzahl ab 6 ATR Rückgang.
+        sektor-fairer Effekt. **Volle Punktzahl ab 3 ATR Rückgang** (Cap
+        bewusst von vormals 6 auf 3 gesenkt: unter den bereits qualifizierenden
+        Signalen schnitt sehr extremes ATR (7+) schlechter ab als moderates
+        (2-4) - mehr Rückgang ist ab einem gewissen Punkt kein zusätzlich
+        gutes Zeichen mehr, siehe Trefferwahrscheinlichkeit unten).
+
+        ### 🎯 Trefferwahrscheinlichkeit - zweite, unabhängige Einschätzung
+        Zusätzlich zum Dip Score zeigt die Spalte "Trefferwahrsch." eine vom
+        Score GETRENNTE Schätzung, wie sehr einem *bereits ausgelösten*
+        Signal zu trauen ist - basierend auf der Kombination aus ATR-Rückgang
+        und EMA50-Potenzial. Details dazu im Statistik-Bereich unten.
 
         ### 🐂🐻 Marktphase (rein informativ, kein Einfluss auf den Score)
         Zusätzlich wird angezeigt, ob der breite Referenzindex (`{MARKT_BENCHMARK_TICKER}`)
