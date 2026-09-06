@@ -914,6 +914,87 @@ def rsi_perioden_screening(df, serien_cache, perioden=(5, 7, 9, 11, 14, 18, 21, 
     return pd.DataFrame(zeilen)
 
 
+def berechne_gleitenden_durchschnitt(close, periode, typ="ema"):
+    """SMA oder EMA fuer eine beliebige Periode - fuer den Vergleich unten,
+    welcher Referenz-Durchschnitt (Typ + Periode) das staerkste Mean-
+    Reversion-Potenzial-Signal liefert. EMA50 war bisher gesetzt, aber nie
+    gegen Alternativen getestet (siehe Chat: EMA50 ist verbreitet, aber
+    nicht annaehernd so kanonisch wie RSI(14))."""
+    if typ == "ema":
+        return close.ewm(span=periode, adjust=False).mean()
+    elif typ == "sma":
+        return close.rolling(window=periode).mean()
+    else:
+        raise ValueError("typ muss 'ema' oder 'sma' sein")
+
+
+def gleitender_durchschnitt_screening(df, serien_cache, kandidaten=None, split_jahr=2021):
+    """Testet mehrere gleitende Durchschnitte (Typ x Periode) als Basis fuer
+    das Mean-Reversion-Potenzial (aktuell EMA50) - MIT direkt eingebautem
+    Zeit-Split (Train bis split_jahr, Test danach). Der EMA50+ATR-Vergleich
+    zuvor sah im Gesamtdatensatz nach einem klaren Sieg aus, der im nie
+    angeschauten Test-Zeitraum fast komplett verschwand (14,4 -> 1,3
+    Prozentpunkte) - dieses Mal wird das von Anfang an mitgeprueft statt
+    hinterher, um nicht denselben Fehler zu wiederholen (siehe Chat).
+
+    'kandidaten' ist eine Liste von (typ, periode)-Tupeln. Default deckt
+    die ueblichen Konventionen ab (20/50/100/150/200, EMA und SMA)."""
+    if kandidaten is None:
+        kandidaten = [
+            ("ema", 20), ("sma", 20),
+            ("ema", 50), ("sma", 50),
+            ("ema", 100), ("sma", 100),
+            ("ema", 150), ("sma", 150),
+            ("ema", 200), ("sma", 200),
+        ]
+
+    basis = df.dropna(subset=["ticker", "datum", "close", "return_21t"]).copy()
+    basis["datum"] = pd.to_datetime(basis["datum"])
+    basis["jahr"] = basis["datum"].dt.year
+
+    zeilen = []
+    for typ, periode in kandidaten:
+        teile = []
+        for ticker, serien in serien_cache.items():
+            ma_serie = berechne_gleitenden_durchschnitt(serien["close"], periode, typ)
+            upside = ((ma_serie - serien["close"]) / serien["close"] * 100).clip(lower=0)
+            teil_df = upside.rename("upside_pct").reset_index()
+            teil_df.columns = ["datum", "upside_pct"]
+            teil_df["ticker"] = ticker
+            teile.append(teil_df)
+        if not teile:
+            continue
+        alle = pd.concat(teile, ignore_index=True)
+        alle["datum"] = pd.to_datetime(alle["datum"])
+
+        merged = basis.merge(alle, on=["ticker", "datum"], how="left")
+        teil = merged.dropna(subset=["upside_pct"])
+        if teil.empty:
+            continue
+
+        train = teil[teil["jahr"] <= split_jahr]
+        test = teil[teil["jahr"] > split_jahr]
+
+        korr_gesamt = teil["upside_pct"].corr(teil["return_21t"])
+        korr_train = train["upside_pct"].corr(train["return_21t"]) if len(train) > 30 else None
+        korr_test = test["upside_pct"].corr(test["return_21t"]) if len(test) > 30 else None
+
+        zeilen.append({
+            "typ": typ,
+            "periode": periode,
+            "korrelation_gesamt": round(korr_gesamt, 3) if pd.notna(korr_gesamt) else None,
+            "korrelation_train_bis_%d" % split_jahr: round(korr_train, 3) if korr_train is not None and pd.notna(korr_train) else None,
+            "korrelation_test_ab_%d" % (split_jahr + 1): round(korr_test, 3) if korr_test is not None and pd.notna(korr_test) else None,
+            "n": len(teil),
+        })
+
+    ergebnis = pd.DataFrame(zeilen)
+    sortier_spalte = "korrelation_test_ab_%d" % (split_jahr + 1)
+    if sortier_spalte in ergebnis.columns:
+        ergebnis = ergebnis.sort_values(sortier_spalte, ascending=False).reset_index(drop=True)
+    return ergebnis
+
+
 def signal_qualitaet_screening(df):
     """Screent ALLE verfuegbaren Merkmale eines Kaufsignals (Score >=
     SOFT_KAUFSIGNAL_SCHWELLE) danach, wie stark sie mit dem tatsaechlichen
@@ -1456,6 +1537,26 @@ def main():
     print("quote_10pct-Spalten nutzen RSI<30 bzw. RSI<25 als einzigen,")
     print("simplen Trigger - kleinere n bei laengeren Perioden sind normal")
     print("(seltener, dass ein traegerer RSI so tief faellt).")
+
+    print(f"\n{'=' * 60}")
+    print("GLEITENDER-DURCHSCHNITT-VERGLEICH: ist EMA50 die richtige Wahl?")
+    print(f"{'=' * 60}")
+    print("EMA50 ist verbreitet, aber nie gegen SMA oder andere Perioden")
+    print("getestet (siehe Chat). Diesmal MIT direktem Zeit-Split (Train bis")
+    print("2021, Test ab 2022) - nach der EMA50+ATR-Erfahrung wird das von")
+    print("Anfang an mitgeprueft, nicht erst hinterher.\n")
+    ma_df = gleitender_durchschnitt_screening(df, serien_cache, split_jahr=2021)
+    if not ma_df.empty:
+        print(ma_df.to_string(index=False))
+        ma_df.to_csv("backtest_gleitender_durchschnitt.csv", index=False)
+        print("\n(gespeichert in backtest_gleitender_durchschnitt.csv)")
+    else:
+        print("Keine auswertbaren Daten fuer den Durchschnitt-Vergleich.")
+    print("\nHinweis: Sortiert nach der TEST-Korrelation (ab 2022), nicht nach")
+    print("der Gesamtkorrelation - genau die Zahl, die beim EMA50+ATR-Vergleich")
+    print("zuvor den grossen In-Sample-Vorsprung fast vollstaendig auffraß.")
+    print("Nur ein Kandidat, dessen Train- UND Test-Korrelation beide stark")
+    print("UND in dieselbe Richtung zeigen, ist ein ernstzunehmender Kandidat.")
 
     print(f"\n{'-' * 60}")
     print(f"FRAGE 2: Haltedauer vs. Verkaufskurs (Episoden bei Schwelle {KAUFSIGNAL_SCHWELLE:.0f})")
