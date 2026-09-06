@@ -201,17 +201,20 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
     )
     ema50_score = min(20.0, ema50_upside_pct * 1.6)
 
-    # 5) Kursrückgang-Tiefe vor dem Signal (max. 30 Punkte - jetzt ATR-
-    #    normalisiert statt roher Prozentwert. Ein Test zeigte: der rohe
-    #    Prozentwert war stark sektor-/volatilitaetsverzerrt (rohe -30%-
-    #    Rueckgaenge kommen fast nur bei volatilen Sektoren vor) - nach
-    #    ATR-Normierung bleibt ein echter, aber deutlich schwaecherer
-    #    Effekt (Korrelation 0.015 statt der aufgeblaehten 0.078 roh),
-    #    deshalb auch das Gewicht von 35 auf 30 gesenkt zugunsten von
-    #    EMA50-Potenzial oben. Cap bei 6 ATR (deckt sich mit dem Punkt,
-    #    an dem der Effekt bei den meisten Sektoren saettigt/kippt).
+    # 5) Kursrückgang-Tiefe vor dem Signal (max. 30 Punkte - ATR-normalisiert
+    #    statt roher Prozentwert). Cap NEU bei 3 ATR statt vormals 6: das
+    #    Signal-Qualitaets-Screening (3.459 Episoden, Score>=65) zeigte, dass
+    #    UNTER den bereits qualifizierenden Signalen die Erfolgsquote bei
+    #    sehr tiefem ATR wieder SINKT (89,3% bei 2-3 ATR -> 54,4% bei 10+
+    #    ATR, klar monoton, auch innerhalb gleicher EMA50-Stufe teilweise
+    #    bestehen bleibend). Vermutete Hauptursache: ein Auswahl-Effekt -
+    #    um mit niedrigem ATR trotzdem zu qualifizieren, muessen die anderen
+    #    Komponenten besonders stark sein, waehrend bei extremem ATR oft der
+    #    Rueckgang allein reicht, auch wenn der Rest mittelmaessig ist.
+    #    Unabhaengig von der genauen Ursache soll die Formel extremes ATR
+    #    aber nicht laenger hoeher belohnen als moderates - siehe Chat.
     drawdown_magnitude = max(0.0, drawdown_atr_multiple)
-    drawdown_score = min(DRAWDOWN_SCORE_MAX, drawdown_magnitude * 5.0)
+    drawdown_score = min(DRAWDOWN_SCORE_MAX, drawdown_magnitude * 10.0)
 
     basis_score = rsi_score + trend_score + gd200_score + ema50_score  # max. 70
     dip_score_roh = basis_score + drawdown_score  # max. 100
