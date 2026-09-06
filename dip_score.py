@@ -34,18 +34,19 @@ import pandas as pd
 # (app.py) mitgeschrieben, damit alte Log-Zeilen nie geloescht werden
 # muessen, nur weil sich die Formel seither geaendert hat - stattdessen
 # bleibt nachvollziehbar, welche Formel-Version welches Signal erzeugt hat.
-FORMEL_VERSION = "v3_trend-gd200-invertiert_2026-09"
+FORMEL_VERSION = "v4_trend-entfernt_atr-cap3_2026-09"
 
 # ==========================================
 # KONFIGURATION (identisch zu app.py - dort werden dieselben Werte
 # verwendet; falls in app.py angepasst, hier synchron halten)
 # ==========================================
-KAUFSIGNAL_SCHWELLE = 75.0        # "volles" Kaufsignal - Re-Backtest nach ATR-Umbau:
-                                   # quote_10pct 41,7% bei 70 -> 51,9% bei 75 (212 Ep./39 Cluster),
-                                   # löst nebenbei auch die Gesundheit-Sektor-Frage strukturell
-                                   # (Gesundheit fällt bei 75 unter n=10, filtert sich von selbst raus)
-SOFT_KAUFSIGNAL_SCHWELLE = 65.0   # "softes" Kaufsignal - mit angehoben, um sinnvollen Abstand
-                                   # zur neuen KAUFSIGNAL_SCHWELLE (75) zu halten
+KAUFSIGNAL_SCHWELLE = 75.0        # ⚠️ VORLAEUFIG UNVERAENDERT NACH TREND-ENTFERNUNG:
+                                   # Max-Score sank von 100 auf 85 (siehe FORMEL_VERSION) - 75/85
+                                   # ist damit effektiv strenger als die alten 75/100. Re-Backtest
+                                   # noetig, um Schwelle 1:1 auf neue Skala zu kalibrieren (siehe Chat).
+                                   # Bisheriger Stand (v3, Trend noch drin): quote_10pct 41,7% bei 70
+                                   # -> 51,9% bei 75 (212 Ep./39 Cluster)
+SOFT_KAUFSIGNAL_SCHWELLE = 65.0   # ⚠️ Ebenfalls vorlaeufig - siehe Hinweis oben, Re-Backtest folgt
 ZIEL_RENDITE_SOFT_PCT = 4.0       # Exit-Ziel für softes Signal - VOR der Schwellen-Anhebung
                                    # kalibriert, nach Re-Backtest mit den neuen Schwellen
                                    # nochmal zu pruefen (siehe Chat)
@@ -165,17 +166,19 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
     rsi_peak = 25.0
     rsi_score = max(0.0, 20.0 - abs(rsi_today - rsi_peak) * 0.8)
 
-    # 2) Trend-STRUKTUR (max. 15 Punkte) - Richtung UMGEKEHRT ggue. der
-    #    urspruenglichen Annahme. Backtest zeigte sauber monoton UND
-    #    unabhaengig vom Rueckgang (innerhalb gleicher ATR-Bins geprueft):
-    #    "Trend voll intakt" (EMA50>GD200 + GD200 steigt) hatte die
-    #    SCHLECHTESTE Zielrenditen-Quote alle Kombinationen (21.8% quote_10pct
-    #    im 4+-ATR-Bin), "Trend komplett gebrochen" die BESTE (33.9%) - ein
-    #    ETF mit bereits gebrochener laengerfristiger Trendstruktur hat
-    #    vermutlich einen "reiferen", weiter fortgeschrittenen Rueckgang
-    #    hinter sich (naeher am Boden) als einer, der nur kurz aus einem
-    #    intakten Aufwaertstrend heraus dippt. Bricht mit klassischer TA-
-    #    Weisheit, aber gut durch die Daten gestuetzt (siehe Chat).
+    # 2) Trend-STRUKTUR - NICHT MEHR TEIL DES SCORES (siehe Chat, Ablations-
+    #    test): Trend-Score wurde einzeln (nicht wie zuvor zusammen mit
+    #    GD200/Drawdown) mit Zeit-Split entfernt und getestet - Entfernen
+    #    verbesserte die geclusterte quote_10pct in BEIDEN Zeitraeumen
+    #    (Train 39,3%->48,0%, Test 43,7%->48,9%), waehrend Entfernen von
+    #    GD200 oder Drawdown im Test-Zeitraum jeweils schadete. Der
+    #    zugrundeliegende Fund (gebrochener Trend > intakter Trend, siehe
+    #    Bereich unten) bleibt vermutlich richtig, traegt als EIGENE
+    #    Score-Komponente in der Summe aber offenbar mehr Rauschen als
+    #    Trennschaerfe bei - moeglicherweise ueberschneidet er sich zu
+    #    stark mit GD200-Puffer/Drawdown. Wird weiterhin berechnet und in
+    #    der Watchlist als reine Zusatzinfo angezeigt (analog Marktregime),
+    #    fliesst aber NICHT MEHR in basis_score/dip_score_roh ein.
     trend_score = (7.5 if ema50_heute < gd200_heute else 0.0) + (
         7.5 if not gd200_steigt else 0.0
     )
@@ -216,8 +219,8 @@ def score_am_punkt(indikatoren: pd.DataFrame, i: int, regime_ok: bool = True) ->
     drawdown_magnitude = max(0.0, drawdown_atr_multiple)
     drawdown_score = min(DRAWDOWN_SCORE_MAX, drawdown_magnitude * 10.0)
 
-    basis_score = rsi_score + trend_score + gd200_score + ema50_score  # max. 70
-    dip_score_roh = basis_score + drawdown_score  # max. 100
+    basis_score = rsi_score + gd200_score + ema50_score  # max. 55 (Trend nicht mehr Teil der Summe)
+    dip_score_roh = basis_score + drawdown_score  # max. 85 (vormals 100 mit Trend)
 
     # Marktregime-Malus ENTFERNT (frueher hier: ×0.8 auf den gesamten Score,
     # wenn der Referenzindex unter seiner eigenen GD200 lag). Ein gezielter
