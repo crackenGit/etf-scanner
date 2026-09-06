@@ -19,6 +19,7 @@ from dip_score import (
     SOFT_KAUFSIGNAL_SCHWELLE,
     RSI_WATCHLIST_SCHWELLE,
     DRAWDOWN_SCORE_MAX,
+    MAX_DIP_SCORE,
 )
 from scanner_data import berechne_indikatoren, hole_etf_name
 from signal_log import logge_signale, signal_log_status
@@ -378,9 +379,17 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
             äußeres df_watch zuzugreifen), damit dieselbe Funktion sowohl für
             die volle Liste als auch für einzelne Sektor-Gruppen nutzbar ist."""
             display_df = pd.DataFrame()
-            display_df["Dip Score"] = df_gruppe.apply(
-                lambda r: f"{r['Dip Score']:.1f}/{r['Noetige_Punkte']:.0f}", axis=1
-            )
+
+            def format_dip_score(r):
+                if r["Ist_Kaufsignal"]:
+                    symbol = " 🔥"
+                elif r["Ist_Soft_Signal"]:
+                    symbol = " 🟡"
+                else:
+                    symbol = ""
+                return f"{r['Dip Score']:.1f}/{MAX_DIP_SCORE:.0f}{symbol}"
+
+            display_df["Dip Score"] = df_gruppe.apply(format_dip_score, axis=1)
 
             def format_trefferwahrsch(r):
                 pct = r["Trefferwahrsch_Pct"]
