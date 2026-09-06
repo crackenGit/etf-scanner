@@ -381,6 +381,17 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
             display_df["Dip Score"] = df_gruppe.apply(
                 lambda r: f"{r['Dip Score']:.1f}/{r['Noetige_Punkte']:.0f}", axis=1
             )
+
+            def format_trefferwahrsch(r):
+                pct = r["Trefferwahrsch_Pct"]
+                if pct is None or pd.isna(pct):
+                    return "– (zu wenig Daten)"
+                rendite = r["Trefferwahrsch_Rendite"]
+                vorzeichen = "+" if rendite >= 0 else ""
+                return f"{pct:.0f}% (Ø {vorzeichen}{rendite:.1f}%, n={int(r['Trefferwahrsch_N'])})"
+
+            display_df["Trefferwahrsch."] = df_gruppe.apply(format_trefferwahrsch, axis=1)
+
             display_df["Name"] = [
                 format_name_rank(df_gruppe.iloc[i]) for i in range(len(df_gruppe))
             ]
@@ -411,7 +422,7 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
                 lambda r: (
                     ("↓" if r["EMA50"] < r["GD200"] else "↑")
                     + ("↓" if not r["GD200_steigt"] else "↑")
-                    + f" {r['Trend_Score']:.0f}/15"
+                    + f" {r['Trend_Score']:.0f}/15 (Info, nicht im Score)"
                 ),
                 axis=1,
             )
@@ -429,7 +440,7 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
                 lambda r: (
                     f"{r['EMA50']:.2f} €"
                     f" ({((r['EMA50'] - r['Kurs']) / r['Kurs']) * 100:+.1f}%)"
-                    f" · {r['EMA50_Score']:.0f}/15"
+                    f" · {r['EMA50_Score']:.0f}/20"
                 ),
                 axis=1,
             )
@@ -438,16 +449,6 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
                 lambda r: f"{r['Drawdown_ATR_Multiple']:.1f} ATR ({r['Drawdown_20t_Pct']:.1f}%) · {r['Drawdown Score']:.0f}/{DRAWDOWN_SCORE_MAX:.0f}",
                 axis=1,
             )
-
-            def format_trefferwahrsch(r):
-                pct = r["Trefferwahrsch_Pct"]
-                if pct is None or pd.isna(pct):
-                    return "– (zu wenig Daten)"
-                rendite = r["Trefferwahrsch_Rendite"]
-                vorzeichen = "+" if rendite >= 0 else ""
-                return f"{pct:.0f}% (Ø {vorzeichen}{rendite:.1f}%, n={int(r['Trefferwahrsch_N'])})"
-
-            display_df["Trefferwahrsch."] = df_gruppe.apply(format_trefferwahrsch, axis=1)
 
             display_df["Regime"] = df_gruppe["Marktregime_OK"].map(
                 lambda ok: "🐂 Bulle" if ok else "🐻 Bär"
