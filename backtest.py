@@ -866,7 +866,7 @@ def berechne_rsi_periode(close, periode):
     return 100 - (100 / (1 + (avg_gain / avg_loss)))
 
 
-def rsi_perioden_screening(df, serien_cache, perioden=(5, 7, 9, 11, 14, 18, 21, 25, 30)):
+def rsi_perioden_screening(df, serien_cache, perioden=(5, 7, 9, 11, 14, 18, 21, 25, 30, 35, 40, 50, 65, 80)):
     """Prueft, ob eine ANDERE RSI-Periode als die verwendete 14 staerker mit
     Erfolg zusammenhaengt. RSI war der urspruengliche Hauptindikator des
     ganzen Projekts, wurde aber bisher nur punktuell gegen Connors RSI(2)
