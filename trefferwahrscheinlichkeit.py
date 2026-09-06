@@ -3,42 +3,39 @@ trefferwahrscheinlichkeit.py
 
 Zweites, vom Dip Score bewusst GETRENNTES Modell ("Meta-Labeling"):
 schaetzt, wie wahrscheinlich ein BEREITS AUSGELOESTES Kaufsignal sein
-eigenes Ziel (4% soft / 7% voll) erreicht - und mit welcher durchschnitt-
-lichen Rendite. Basiert auf den zwei staerksten, unabhaengig voneinander
-wirkenden Faktoren aus dem Signal-Qualitaets-Screening in backtest.py
-(signal_qualitaet_screening): ATR-normalisierter Rueckgang und
-EMA50-Potenzial-Score.
+eigenes Ziel erreicht - und mit welcher durchschnittlichen Rendite.
+Basiert auf den zwei staerksten, unabhaengig voneinander wirkenden
+Faktoren aus dem Signal-Qualitaets-Screening in backtest.py: ATR-
+normalisierter Rueckgang und EMA50-Potenzial-Score.
 
 WICHTIG: Fliesst NICHT in den Dip Score (dip_score.py) ein. Der Dip Score
 beantwortet "ist das ueberhaupt ein Kaufsignal", dieses Modul beantwortet
 separat "wie sehr vertraue ich einem Signal, das schon ausgeloest hat" -
 zwei unterschiedliche Fragen, siehe Chat fuer die Herleitung.
 
-Herkunft der Tabellenwerte: backtest.py-Lauf mit 3.459 Episoden (Score >=
-65) auf dem gesamten ETF-Universum, Kreuztabelle ATR-Vielfaches x
-EMA50-Score gegen "eigenes Ziel erreicht" bzw. Ø 21-Tage-Rendite. Bei
-einer Formel- oder Datenbasis-Aenderung hier manuell nachziehen (siehe
-Statistik-Tab in der App fuer die Herleitung).
+Herkunft der Tabellenwerte: backtest.py-Lauf NACH Entfernung von
+trend_score aus dem Score (FORMEL_VERSION v4), Basis Score>=40 (12.827
+Episoden) auf dem gesamten ETF-Universum - bewusst eine breitere Basis als
+nur die (jetzt strengere) Kaufsignal-Schwelle, da die feineren Bins der
+vorigen Tabellen-Version mit der neuen, selektiveren Schwelle zu duenn
+besetzt waren. Nur 2 ATR-Bins statt vormals 4, aus demselben Grund
+(Zellenbesetzung). Bei einer erneuten Formel- oder Datenbasis-Aenderung
+hier manuell nachziehen (siehe Statistik-Tab in der App fuer die
+Herleitung).
 """
 
 # (atr_von, atr_bis, ema50_von, ema50_bis, trefferquote_pct, avg_rendite_21t_pct, n_episoden)
 TREFFERWAHRSCHEINLICHKEIT_TABELLE = [
-    (0, 3, 10, 15, 82.9, 4.12, 35),
-    (0, 3, 15, 21, 91.5, 8.84, 129),
-    (3, 5, 0, 10, 62.1, 0.17, 383),
-    (3, 5, 10, 15, 76.9, 1.76, 627),
-    (3, 5, 15, 21, 87.7, 7.09, 301),
-    (5, 7, 0, 10, 59.4, 0.09, 685),
-    (5, 7, 10, 15, 72.4, 0.97, 456),
-    (5, 7, 15, 21, 76.3, 3.16, 430),
-    (7, 1000, 0, 10, 54.3, 0.21, 164),
-    (7, 1000, 10, 15, 61.1, 0.79, 113),
-    (7, 1000, 15, 21, 62.5, -1.44, 136),
+    (0, 4, 0, 10, 27.6, 1.63, 6292),
+    (0, 4, 10, 15, 60.4, 3.63, 280),
+    (0, 4, 15, 21, 85.0, 5.88, 100),
+    (4, 1000, 0, 10, 19.4, 0.45, 2933),
+    (4, 1000, 10, 15, 45.6, 0.84, 57),
+    (4, 1000, 15, 21, 63.6, 4.62, 33),
 ]
 
-# Fallback fuer Kombinationen, die im Backtest praktisch nicht vorkamen
-# (z.B. sehr flacher Rueckgang + sehr niedriges EMA50-Potenzial - dafuer
-# braeuchte es sonst kaum genug Punkte fuer ein Signal >= 65).
+# Mindeststichprobe, unterhalb derer eine Zelle als "keine ausreichenden
+# Daten" behandelt wird, statt eine unzuverlaessige Schaetzung zu liefern.
 MINDEST_STICHPROBE = 20
 
 
