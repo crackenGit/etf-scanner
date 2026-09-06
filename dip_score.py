@@ -56,6 +56,9 @@ RSI_WATCHLIST_SCHWELLE = 40.0
 DRAWDOWN_SCORE_MAX = 30.0         # Cap fuer die Rueckgang-Komponente (siehe
                                    # score_am_punkt) - als Konstante, damit
                                    # Formel und Anzeige (app.py) nie auseinanderlaufen
+MAX_DIP_SCORE = 85.0              # Theoretisches Maximum der Formel (RSI 20 + GD200 15 +
+                                   # EMA50 20 + Drawdown 30) - seit v4 ohne Trend (vormals 100).
+                                   # Als Konstante, damit Formel und Anzeige nie auseinanderlaufen
 MARKT_BENCHMARK_TICKER = "URTH"  # Breiter Referenzindex (iShares MSCI World). Alternative: "^STOXX" (Europa)
 
 # Sektor-spezifischer Aufschlag (in Punkten) auf KAUFSIGNAL_SCHWELLE/
