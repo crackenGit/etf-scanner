@@ -42,6 +42,7 @@ from dip_score import (
     ZIEL_RENDITE_VOLL_PCT,
     MARKT_BENCHMARK_TICKER,
 )
+from trefferwahrscheinlichkeit import TREFFERWAHRSCHEINLICHKEIT_TABELLE
 
 # ==========================================
 # KONFIGURATION
@@ -1034,10 +1035,11 @@ def renditeprofil_nach_tagen(df, serien_cache, tier, tage_liste=RENDITE_PROFIL_T
     return pd.DataFrame(zeilen)
 
 
-def ziel_exit_sweep(df, serien_cache, tier, ziel_kandidaten):
-    """Testet mehrere feste Ziel-Renditen fuer eine Signalstufe und
-    vergleicht Erreichquote, Haltedauer und tatsaechliche Rendite."""
-    episoden = episoden_tier(df, tier)
+def ziel_exit_sweep_episoden(episoden, serien_cache, ziel_kandidaten):
+    """Kern der Sweep-Logik, arbeitet direkt auf einer bereits gefilterten
+    Episoden-Tabelle - wiederverwendbar fuer beliebige Filterkriterien
+    (Signalstufe, Trefferwahrscheinlichkeits-Stufe, etc.), nicht nur
+    Soft/Voll wie urspruenglich."""
     zeilen = []
     for ziel_pct in ziel_kandidaten:
         ergebnisse = []
@@ -1068,6 +1070,52 @@ def ziel_exit_sweep(df, serien_cache, tier, ziel_kandidaten):
             "geclusterte_rendite_pct": cluster_stats["geclusterter_mittelwert_pct"],
         })
     return pd.DataFrame(zeilen)
+
+
+def klassifiziere_trefferwahrsch_tier(atr_wert, ema50_score_wert):
+    """Ordnet ATR-Vielfaches + EMA50-Score einer von drei groben
+    Trefferwahrscheinlichkeits-Stufen zu (Hoch >=80%, Mittel 65-80%,
+    Niedrig <65%), basierend auf derselben Tabelle wie die Live-App
+    (trefferwahrscheinlichkeit.py) - damit Backtest und App garantiert
+    dieselbe Einteilung verwenden."""
+    if pd.isna(atr_wert) or pd.isna(ema50_score_wert):
+        return None
+    for atr_von, atr_bis, ema_von, ema_bis, quote, _, _ in TREFFERWAHRSCHEINLICHKEIT_TABELLE:
+        if atr_von <= atr_wert < atr_bis and ema_von <= ema50_score_wert < ema_bis:
+            if quote >= 80:
+                return "hoch"
+            elif quote >= 65:
+                return "mittel"
+            else:
+                return "niedrig"
+    return None
+
+
+def episoden_trefferwahrsch_tier(df, tier):
+    """Wie episoden_tier(), aber gruppiert nach Trefferwahrscheinlichkeits-
+    Stufe statt Signalstufe. Nur echte Kaufsignale (Score >= Softe
+    Schwelle) werden betrachtet - passend zur Tabellen-Kalibrierung."""
+    basis_maske = df["dip_score"] >= SOFT_KAUFSIGNAL_SCHWELLE
+    tier_je_zeile = df.apply(
+        lambda r: klassifiziere_trefferwahrsch_tier(r["drawdown_atr_multiple"], r["ema50_score"]),
+        axis=1,
+    )
+    maske = basis_maske & (tier_je_zeile == tier)
+    return episoden_aus_maske(df, maske)
+
+
+def ziel_exit_sweep(df, serien_cache, tier, ziel_kandidaten):
+    """Testet mehrere feste Ziel-Renditen fuer eine Signalstufe und
+    vergleicht Erreichquote, Haltedauer und tatsaechliche Rendite."""
+    episoden = episoden_tier(df, tier)
+    return ziel_exit_sweep_episoden(episoden, serien_cache, ziel_kandidaten)
+
+
+def ziel_exit_sweep_trefferwahrsch(df, serien_cache, tier, ziel_kandidaten):
+    """Wie ziel_exit_sweep(), aber nach Trefferwahrscheinlichkeits-Stufe
+    (hoch/mittel/niedrig) statt nach Signalstufe (soft/voll) gruppiert."""
+    episoden = episoden_trefferwahrsch_tier(df, tier)
+    return ziel_exit_sweep_episoden(episoden, serien_cache, ziel_kandidaten)
 
 
 def exit_regel_vergleich(df, serien_cache):
@@ -1121,6 +1169,41 @@ def exit_regel_vergleich(df, serien_cache):
 
     print("\n  Hinweis: 'geclusterte_rendite_pct' ist die robustere Zahl bei")
     print("  zeitlich gehaeuften Signalen (siehe Schwellen-Sweep-Hinweis oben).")
+
+
+def exit_regel_nach_trefferwahrscheinlichkeit(df, serien_cache):
+    """Testet, ob unterschiedliche Trefferwahrscheinlichkeits-Stufen auch
+    unterschiedliche optimale Exit-Ziele haben - Ausgangspunkt: hoch
+    eingeschaetzte Signale liefen im ersten Screening im Schnitt deutlich
+    weiter (+8,84%) als niedrig eingeschaetzte (+0,21%) - ein einheitliches
+    Ziel fuer alle koennte bei starken Signalen zu frueh verkaufen."""
+    print(f"\n{'=' * 60}")
+    print("EXIT-ZIEL NACH TREFFERWAHRSCHEINLICHKEITS-STUFE")
+    print(f"{'=' * 60}")
+
+    ziel_kandidaten = {
+        "hoch": [6.0, 7.0, 8.0, 9.0, 10.0, 12.0],
+        "mittel": [3.0, 4.0, 5.0, 6.0, 7.0],
+        "niedrig": [2.0, 3.0, 4.0, 5.0],
+    }
+    labels = {
+        "hoch": "Trefferwahrsch. HOCH (>=80%)",
+        "mittel": "Trefferwahrsch. MITTEL (65-80%)",
+        "niedrig": "Trefferwahrsch. NIEDRIG (<65%)",
+    }
+
+    for tier in ["hoch", "mittel", "niedrig"]:
+        episoden = episoden_trefferwahrsch_tier(df, tier)
+        print(f"\n--- {labels[tier]}: {len(episoden)} Episoden ---")
+        if len(episoden) < 30:
+            print("  Zu wenig Episoden fuer einen aussagekraeftigen Sweep.")
+            continue
+        sweep = ziel_exit_sweep_trefferwahrsch(df, serien_cache, tier, ziel_kandidaten[tier])
+        print(sweep.to_string(index=False))
+
+    print("\n  Hinweis: Diese Stufen ueberschneiden sich mit, sind aber nicht")
+    print("  identisch zu Soft/Voll - eine Signalstufe kann je nach ATR/EMA50")
+    print("  in jede der drei Trefferwahrsch.-Stufen fallen.")
 
 
 def zusammenfassung(df, label=""):
@@ -1277,6 +1360,7 @@ def main():
             print(f"    Ø an Tag {bt_eff.mean():.1f}")
 
     exit_regel_vergleich(df, serien_cache)
+    exit_regel_nach_trefferwahrscheinlichkeit(df, serien_cache)
 
     print("\n\n--- ZUSATZVALIDIERUNG: etablierte, langjaehrige Sektor-ETFs (USD) ---")
     zusatz_ergebnisse = []
