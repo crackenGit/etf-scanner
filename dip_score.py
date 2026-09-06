@@ -40,17 +40,18 @@ FORMEL_VERSION = "v4_trend-entfernt_atr-cap3_2026-09"
 # KONFIGURATION (identisch zu app.py - dort werden dieselben Werte
 # verwendet; falls in app.py angepasst, hier synchron halten)
 # ==========================================
-KAUFSIGNAL_SCHWELLE = 75.0        # ⚠️ VORLAEUFIG UNVERAENDERT NACH TREND-ENTFERNUNG:
-                                   # Max-Score sank von 100 auf 85 (siehe FORMEL_VERSION) - 75/85
-                                   # ist damit effektiv strenger als die alten 75/100. Re-Backtest
-                                   # noetig, um Schwelle 1:1 auf neue Skala zu kalibrieren (siehe Chat).
-                                   # Bisheriger Stand (v3, Trend noch drin): quote_10pct 41,7% bei 70
-                                   # -> 51,9% bei 75 (212 Ep./39 Cluster)
-SOFT_KAUFSIGNAL_SCHWELLE = 65.0   # ⚠️ Ebenfalls vorlaeufig - siehe Hinweis oben, Re-Backtest folgt
-ZIEL_RENDITE_SOFT_PCT = 4.0       # Exit-Ziel für softes Signal - VOR der Schwellen-Anhebung
-                                   # kalibriert, nach Re-Backtest mit den neuen Schwellen
-                                   # nochmal zu pruefen (siehe Chat)
-ZIEL_RENDITE_VOLL_PCT = 7.0       # Exit-Ziel für volles Signal - dito, noch zu validieren
+KAUFSIGNAL_SCHWELLE = 80.0        # NEU kalibriert nach Trend-Entfernung (Skala jetzt 0-85 statt
+                                   # 0-100): quote_10pct 62,3% bei 75 -> 68,4% bei 80 (78 Cluster,
+                                   # noch komfortabel besetzt). 85 waere zu duenn (nur 14 Cluster),
+                                   # 90 unerreichbar (Max=85). Siehe Chat fuer Herleitung.
+SOFT_KAUFSIGNAL_SCHWELLE = 70.0   # NEU kalibriert: 127 Cluster, quote_10pct 55,8% - guter Sweet
+                                   # Spot zwischen Signalhaeufigkeit und Qualitaet auf neuer Skala
+ZIEL_RENDITE_SOFT_PCT = 4.0       # Bestaetigt nach Neukalibrierung: 4%-Ziel weiterhin nahe dem
+                                   # Optimum (1,99% geclusterte Rendite im Exit-Sweep)
+ZIEL_RENDITE_VOLL_PCT = 10.0      # ANGEHOBEN von 7 auf 10: Exit-Sweep beim vollen Signal zeigte
+                                   # Optimum (geclusterte Rendite) bei 10-12% statt 7%. Basiert noch
+                                   # auf der alten Volles-Signal-Population (>=75) - mit der neuen
+                                   # Schwelle (80) beim naechsten Lauf gegenpruefen (siehe Chat)
 RSI_WATCHLIST_SCHWELLE = 40.0
 DRAWDOWN_SCORE_MAX = 30.0         # Cap fuer die Rueckgang-Komponente (siehe
                                    # score_am_punkt) - als Konstante, damit
