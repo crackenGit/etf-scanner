@@ -995,6 +995,354 @@ def gleitender_durchschnitt_screening(df, serien_cache, kandidaten=None, split_j
     return ergebnis
 
 
+def vergleiche_referenz_durchschnitt_praxistest(df, serien_cache, split_jahr=2021, referenz_kandidaten=None):
+    """Praxistest statt nur roher Korrelation: ersetzt NUR ema50_score im
+    bestehenden Score durch eine aequivalent skalierte Alternative (z.B.
+    SMA100), alle anderen Komponenten (RSI/Trend/GD200/Drawdown) bleiben
+    unveraendert - und prueft die tatsaechliche Auswirkung auf quote_10pct
+    (geclustert), getrennt fuer Train (bis split_jahr) und Test (danach).
+
+    Direkte Fortsetzung von gleitender_durchschnitt_screening(): dort ging
+    es um die rohe Korrelation der Kennzahl selbst, hier um die Wirkung im
+    fertigen, gedeckelten Score - das ist die Zahl, die am Ende zaehlt."""
+    if referenz_kandidaten is None:
+        referenz_kandidaten = [("ema", 50), ("sma", 100), ("ema", 100)]
+
+    basis = df.dropna(subset=[
+        "ticker", "datum", "rsi_score", "trend_score", "gd200_score",
+        "drawdown_score", "erreicht_10pct",
+    ]).copy()
+    basis["datum"] = pd.to_datetime(basis["datum"])
+    basis["jahr"] = basis["datum"].dt.year
+
+    anteil = (df["dip_score"] >= KAUFSIGNAL_SCHWELLE).sum() / len(df)
+
+    zeilen = []
+    for typ, periode in referenz_kandidaten:
+        teile = []
+        for ticker, serien in serien_cache.items():
+            ma_serie = berechne_gleitenden_durchschnitt(serien["close"], periode, typ)
+            upside_pct = ((ma_serie - serien["close"]) / serien["close"] * 100).clip(lower=0)
+            # Gleiche Skalierung wie das bestehende ema50_score (min(20, upside*1.6))
+            ref_score = (upside_pct * 1.6).clip(upper=20.0)
+            teil_df = ref_score.rename("ref_score").reset_index()
+            teil_df.columns = ["datum", "ref_score"]
+            teil_df["ticker"] = ticker
+            teile.append(teil_df)
+        if not teile:
+            continue
+        alle = pd.concat(teile, ignore_index=True)
+        alle["datum"] = pd.to_datetime(alle["datum"])
+
+        merged = basis.merge(alle, on=["ticker", "datum"], how="left")
+        teil = merged.dropna(subset=["ref_score"])
+        if teil.empty:
+            continue
+
+        neuer_score = (teil["rsi_score"] + teil["trend_score"] + teil["gd200_score"]
+                       + teil["ref_score"] + teil["drawdown_score"])
+
+        for label, sub_maske in [("TRAIN (bis %d)" % split_jahr, teil["jahr"] <= split_jahr),
+                                   ("TEST (ab %d)" % (split_jahr + 1), teil["jahr"] > split_jahr)]:
+            sub = teil[sub_maske]
+            sub_score = neuer_score[sub_maske]
+            if len(sub) < 30:
+                continue
+            ziel_n = max(1, int(len(sub) * anteil))
+            top_n_idx = sub_score.nlargest(ziel_n).index
+
+            maske = pd.Series(False, index=df.index)
+            maske.loc[top_n_idx] = True
+            episoden = episoden_aus_maske(df, maske).dropna(subset=["erreicht_10pct"])
+            if episoden.empty:
+                continue
+            geclustert = cluster_zuweisen(episoden)
+            quote = geclustert.groupby("cluster_id")["erreicht_10pct"].mean().mean() * 100
+
+            zeilen.append({
+                "kombination": f"{typ.upper()}{periode}",
+                "zeitraum": label,
+                "n_episoden": len(episoden),
+                "n_cluster": geclustert["cluster_id"].nunique(),
+                "quote_10pct_clustergewichtet": round(quote, 1),
+            })
+
+    return pd.DataFrame(zeilen)
+
+
+def vergleiche_kombinierte_referenz(df, serien_cache, split_jahr=2021):
+    """Prueft, ob eine KOMBINATION aus EMA50 und SMA100 (statt reinem Ersatz)
+    noch besser abschneidet - beide Referenzwerte erfassen moeglicherweise
+    unterschiedliche, sich ergaenzende Aspekte (EMA50 reagiert schneller auf
+    juengste Kursbewegung, SMA100 ist laengerfristiger geglaettet), statt
+    dass eines das andere nur dupliziert. Prueft dafuer zuerst, wie stark
+    die beiden Rohgroessen selbst korrelieren - hohe Korrelation zwischen
+    beiden wuerde bedeuten, wenig Zusatznutzen durch Kombination zu
+    erwarten (redundante statt komplementaere Information).
+
+    Testet 4 Varianten (Nur EMA50, Nur SMA100, Mittelwert, Maximum) mit
+    demselben Zeit-Split wie zuvor - jede muss sich in TRAIN UND TEST
+    beweisen, nicht nur im Durchschnitt."""
+    basis = df.dropna(subset=[
+        "ticker", "datum", "rsi_score", "trend_score", "gd200_score",
+        "drawdown_score", "erreicht_10pct",
+    ]).copy()
+    basis["datum"] = pd.to_datetime(basis["datum"])
+    basis["jahr"] = basis["datum"].dt.year
+
+    ema50_teile, sma100_teile = [], []
+    for ticker, serien in serien_cache.items():
+        ema50 = berechne_gleitenden_durchschnitt(serien["close"], 50, "ema")
+        sma100 = berechne_gleitenden_durchschnitt(serien["close"], 100, "sma")
+        up_ema50 = ((ema50 - serien["close"]) / serien["close"] * 100).clip(lower=0)
+        up_sma100 = ((sma100 - serien["close"]) / serien["close"] * 100).clip(lower=0)
+
+        t1 = up_ema50.rename("upside_ema50").reset_index()
+        t1.columns = ["datum", "upside_ema50"]
+        t1["ticker"] = ticker
+        ema50_teile.append(t1)
+
+        t2 = up_sma100.rename("upside_sma100").reset_index()
+        t2.columns = ["datum", "upside_sma100"]
+        t2["ticker"] = ticker
+        sma100_teile.append(t2)
+
+    if not ema50_teile:
+        return None, pd.DataFrame()
+
+    ema50_alle = pd.concat(ema50_teile, ignore_index=True)
+    ema50_alle["datum"] = pd.to_datetime(ema50_alle["datum"])
+    sma100_alle = pd.concat(sma100_teile, ignore_index=True)
+    sma100_alle["datum"] = pd.to_datetime(sma100_alle["datum"])
+
+    merged = basis.merge(ema50_alle, on=["ticker", "datum"], how="left")
+    merged = merged.merge(sma100_alle, on=["ticker", "datum"], how="left")
+    merged = merged.dropna(subset=["upside_ema50", "upside_sma100"])
+    if merged.empty:
+        return None, pd.DataFrame()
+
+    korr_zwischen = merged["upside_ema50"].corr(merged["upside_sma100"])
+
+    merged["score_ema50"] = (merged["upside_ema50"] * 1.6).clip(upper=20.0)
+    merged["score_sma100"] = (merged["upside_sma100"] * 1.6).clip(upper=20.0)
+    merged["score_kombiniert_avg"] = (merged["score_ema50"] + merged["score_sma100"]) / 2
+    merged["score_kombiniert_max"] = merged[["score_ema50", "score_sma100"]].max(axis=1)
+
+    anteil = (df["dip_score"] >= KAUFSIGNAL_SCHWELLE).sum() / len(df)
+
+    varianten = {
+        "Nur EMA50 (aktuell)": "score_ema50",
+        "Nur SMA100": "score_sma100",
+        "Kombiniert (Mittelwert)": "score_kombiniert_avg",
+        "Kombiniert (Maximum)": "score_kombiniert_max",
+    }
+
+    zeilen = []
+    for name, spalte in varianten.items():
+        gesamt_score = (merged["rsi_score"] + merged["trend_score"] + merged["gd200_score"]
+                         + merged[spalte] + merged["drawdown_score"])
+        for label, sub_maske in [("TRAIN (bis %d)" % split_jahr, merged["jahr"] <= split_jahr),
+                                   ("TEST (ab %d)" % (split_jahr + 1), merged["jahr"] > split_jahr)]:
+            sub = merged[sub_maske]
+            sub_score = gesamt_score[sub_maske]
+            if len(sub) < 30:
+                continue
+            ziel_n = max(1, int(len(sub) * anteil))
+            top_n_idx = sub_score.nlargest(ziel_n).index
+
+            maske = pd.Series(False, index=df.index)
+            maske.loc[top_n_idx] = True
+            episoden = episoden_aus_maske(df, maske).dropna(subset=["erreicht_10pct"])
+            if episoden.empty:
+                continue
+            geclustert = cluster_zuweisen(episoden)
+            quote = geclustert.groupby("cluster_id")["erreicht_10pct"].mean().mean() * 100
+
+            zeilen.append({
+                "variante": name,
+                "zeitraum": label,
+                "n_episoden": len(episoden),
+                "n_cluster": geclustert["cluster_id"].nunique(),
+                "quote_10pct_clustergewichtet": round(quote, 1),
+            })
+
+    return korr_zwischen, pd.DataFrame(zeilen)
+
+
+CRASH_PERIODEN = [
+    ("2020-02-19", "2020-04-07"),  # COVID-Crash - siehe Chat, erweiterbar
+]
+
+
+def ist_in_crash_periode(datum, crash_perioden=None):
+    """Prueft, ob ein Datum in eine der definierten Crash-Perioden faellt
+    (siehe CRASH_PERIODEN oben) - zum Ausschliessen aussergewoehnlicher
+    Markt-Ereignisse aus einer Analyse, um zu sehen, wie sich Faktoren im
+    'normalen' Marktgeschehen verhalten."""
+    if crash_perioden is None:
+        crash_perioden = CRASH_PERIODEN
+    d = pd.Timestamp(datum)
+    return any(pd.Timestamp(start) <= d <= pd.Timestamp(ende) for start, ende in crash_perioden)
+
+
+def berechne_ticker_volatilitaet(serien_cache):
+    """Annualisierte realisierte Volatilitaet je Ticker (Standardabweichung
+    der Tagesrenditen * sqrt(252), in Prozent) - Grundlage fuer die
+    Volatil/Ruhig-Aufteilung unten UND direkt als Rangliste nutzbar, falls
+    einzelne ETFs aus isin.txt wegen zu hoher/niedriger Volatilitaet fuer
+    diese Strategie ueberdacht werden sollen (siehe Chat)."""
+    ergebnisse = {}
+    for ticker, serien in serien_cache.items():
+        renditen = serien["close"].pct_change().dropna()
+        if len(renditen) < 30:
+            continue
+        ergebnisse[ticker] = round(renditen.std() * (252 ** 0.5) * 100, 1)
+    return pd.Series(ergebnisse).sort_values(ascending=False)
+
+
+TIEFEN_ANALYSE_TAGE = {
+    "1T": 1, "3T": 3, "1W": 5, "2W": 10, "3W": 15,
+    "4W": 20, "1M": 21, "3M": 63, "6M": 126,
+}
+
+
+def faktor_zeithorizont_analyse(df, serien_cache, faktor_masken, tage_dict=None,
+                                  crash_perioden=None, ticker_filter=None):
+    """Kernfunktion der vertieften Analyse (siehe Chat): fuer jeden
+    uebergebenen Faktor (als boolsche Maske auf df, gleicher Index) und
+    jeden Zeit-Horizont (1 Tag bis 6 Monate) wird die tatsaechliche
+    Rendite berechnet - Ø, Median, Trefferquote, UND geclustert (robuster
+    bei zeitlich gehaeuften Signalen).
+
+    - crash_perioden=[...] schliesst die betroffenen Tage VOR der
+      Episoden-Bildung aus (z.B. Corona-Crash) - zeigt, wie sich ein
+      Faktor im 'normalen' Marktgeschehen verhaelt.
+    - ticker_filter=[...] schraenkt auf bestimmte Ticker ein (z.B. nur
+      volatile oder nur ruhige ETFs, siehe berechne_ticker_volatilitaet).
+
+    6-Monats-Horizont (126 Handelstage) braucht entsprechend viel Historie
+    NACH dem Signal - bei den juengsten paar Monaten im Datensatz gibt es
+    dafuer zwangslaeufig weniger/keine Beobachtungen (kein Fehler, nur
+    Randeffekt am aktuellen Rand der Historie)."""
+    if tage_dict is None:
+        tage_dict = TIEFEN_ANALYSE_TAGE
+
+    basis = df.copy()
+    basis["datum"] = pd.to_datetime(basis["datum"])
+
+    if crash_perioden:
+        crash_maske = basis["datum"].apply(lambda d: ist_in_crash_periode(d, crash_perioden))
+        basis = basis[~crash_maske]
+
+    if ticker_filter is not None:
+        basis = basis[basis["ticker"].isin(ticker_filter)]
+
+    zeilen = []
+    for faktor_name, faktor_maske in faktor_masken.items():
+        aktuelle_maske = faktor_maske.reindex(basis.index, fill_value=False)
+        episoden = episoden_aus_maske(basis, aktuelle_maske)
+        if episoden.empty:
+            continue
+
+        for label, tage in tage_dict.items():
+            treffer = []
+            for _, ep in episoden.iterrows():
+                serien, i = _episode_index(serien_cache, ep)
+                if serien is None:
+                    continue
+                idx = i + tage
+                close = serien["close"]
+                if idx >= len(close):
+                    continue
+                rendite = ((close.iloc[idx] - close.iloc[i]) / close.iloc[i]) * 100
+                treffer.append({"rendite": rendite, "datum": ep["datum"]})
+
+            if not treffer:
+                continue
+            rdf = pd.DataFrame(treffer)
+            geclustert = cluster_zuweisen(rdf)
+            geclusterter_mittelwert = geclustert.groupby("cluster_id")["rendite"].mean().mean()
+
+            zeilen.append({
+                "faktor": faktor_name,
+                "horizont": label,
+                "n_episoden": len(rdf),
+                "n_cluster": geclustert["cluster_id"].nunique(),
+                "avg_rendite_pct": round(rdf["rendite"].mean(), 2),
+                "median_rendite_pct": round(rdf["rendite"].median(), 2),
+                "trefferquote_pct": round((rdf["rendite"] > 0).mean() * 100, 1),
+                "geclusterte_rendite_pct": round(geclusterter_mittelwert, 2) if pd.notna(geclusterter_mittelwert) else None,
+            })
+
+    ergebnis = pd.DataFrame(zeilen)
+    if not ergebnis.empty:
+        reihenfolge = list(tage_dict.keys())
+        ergebnis["horizont"] = pd.Categorical(ergebnis["horizont"], categories=reihenfolge, ordered=True)
+        ergebnis = ergebnis.sort_values(["faktor", "horizont"]).reset_index(drop=True)
+    return ergebnis
+
+
+def ablations_test(df, split_jahr=2021):
+    """Letzter offener Punkt vor dem Formel-Einfrieren (siehe Chat):
+    entfernt EINZELN je eine der drei schwaecheren Komponenten (Trend,
+    GD200, Drawdown) aus der Formel und prueft die Auswirkung auf
+    quote_10pct (geclustert), getrennt Train (bis split_jahr) und Test
+    (danach). Anders als der fruehere EMA50+ATR-Vergleich, der alle drei
+    gleichzeitig entfernte, zeigt dies, welche der drei tatsaechlich
+    Gewicht verdient und welche vielleicht ueberfluessig ist.
+
+    Braucht NUR die bereits vorhandenen Score-Spalten (keine Rohkurse) -
+    kann direkt auf einem bestehenden backtest_ergebnisse.csv laufen,
+    ohne neuen Backtest-Lauf."""
+    komponenten = ["rsi_score", "trend_score", "gd200_score", "ema50_score", "drawdown_score"]
+    basis = df.dropna(subset=komponenten + ["erreicht_10pct", "datum"]).copy()
+    basis["datum"] = pd.to_datetime(basis["datum"])
+    basis["jahr"] = basis["datum"].dt.year
+
+    anteil = (df["dip_score"] >= KAUFSIGNAL_SCHWELLE).sum() / len(df)
+
+    varianten = {
+        "Vollstaendige Formel": {},
+        "Minus Trend": {"trend_score": 0},
+        "Minus GD200": {"gd200_score": 0},
+        "Minus Drawdown": {"drawdown_score": 0},
+    }
+
+    zeilen = []
+    for name, ueberschreibungen in varianten.items():
+        score = pd.Series(0.0, index=basis.index)
+        for komp in komponenten:
+            mult = ueberschreibungen.get(komp, 1)
+            score = score + basis[komp] * mult
+
+        for label, sub_maske in [("TRAIN (bis %d)" % split_jahr, basis["jahr"] <= split_jahr),
+                                   ("TEST (ab %d)" % (split_jahr + 1), basis["jahr"] > split_jahr)]:
+            sub = basis[sub_maske]
+            sub_score = score[sub_maske]
+            if len(sub) < 30:
+                continue
+            ziel_n = max(1, int(len(sub) * anteil))
+            top_n_idx = sub_score.nlargest(ziel_n).index
+
+            maske = pd.Series(False, index=df.index)
+            maske.loc[top_n_idx] = True
+            episoden = episoden_aus_maske(df, maske).dropna(subset=["erreicht_10pct"])
+            if episoden.empty:
+                continue
+            geclustert = cluster_zuweisen(episoden)
+            quote = geclustert.groupby("cluster_id")["erreicht_10pct"].mean().mean() * 100
+
+            zeilen.append({
+                "variante": name,
+                "zeitraum": label,
+                "n_episoden": len(episoden),
+                "n_cluster": geclustert["cluster_id"].nunique(),
+                "quote_10pct_clustergewichtet": round(quote, 1),
+            })
+
+    return pd.DataFrame(zeilen)
+
+
 def signal_qualitaet_screening(df):
     """Screent ALLE verfuegbaren Merkmale eines Kaufsignals (Score >=
     SOFT_KAUFSIGNAL_SCHWELLE) danach, wie stark sie mit dem tatsaechlichen
@@ -1557,6 +1905,102 @@ def main():
     print("zuvor den grossen In-Sample-Vorsprung fast vollstaendig auffraß.")
     print("Nur ein Kandidat, dessen Train- UND Test-Korrelation beide stark")
     print("UND in dieselbe Richtung zeigen, ist ein ernstzunehmender Kandidat.")
+
+    print(f"\n{'=' * 60}")
+    print("PRAXISTEST: EMA50 im SCORE durch Alternative ersetzen")
+    print(f"{'=' * 60}")
+    print("Direkte Fortsetzung von oben - nicht nur rohe Korrelation, sondern")
+    print("die tatsaechliche quote_10pct (geclustert) im fertigen Score, wenn")
+    print("NUR ema50_score ersetzt wird, Rest unveraendert bleibt.\n")
+    praxis_df = vergleiche_referenz_durchschnitt_praxistest(df, serien_cache, split_jahr=2021)
+    if not praxis_df.empty:
+        print(praxis_df.to_string(index=False))
+        praxis_df.to_csv("backtest_referenz_praxistest.csv", index=False)
+        print("\n(gespeichert in backtest_referenz_praxistest.csv)")
+    else:
+        print("Keine auswertbaren Daten fuer den Praxistest.")
+    print("\nHinweis: Ein Kandidat ist nur dann ueberzeugend, wenn er EMA50 in")
+    print("BEIDEN Zeitraeumen (TRAIN und TEST) schlaegt - nicht nur im Schnitt.")
+
+    print(f"\n{'=' * 60}")
+    print("KOMBINIEREN STATT ERSETZEN: EMA50 + SMA100 zusammen?")
+    print(f"{'=' * 60}")
+    print("Beide koennten sich ergaenzen (EMA50 reagiert schneller, SMA100 ist")
+    print("laengerfristiger geglaettet) statt dass eines das andere dupliziert.\n")
+    korr_ema_sma, komb_df = vergleiche_kombinierte_referenz(df, serien_cache, split_jahr=2021)
+    if korr_ema_sma is not None:
+        print(f"Korrelation EMA50-Upside <-> SMA100-Upside: {korr_ema_sma:.3f}")
+        print("(sehr hoch, >0.85: wenig Eigenstaendigkeit, Kombination bringt")
+        print("vermutlich wenig - beide messen dann groesstenteils dasselbe)\n")
+    if not komb_df.empty:
+        print(komb_df.to_string(index=False))
+        komb_df.to_csv("backtest_kombinierte_referenz.csv", index=False)
+        print("\n(gespeichert in backtest_kombinierte_referenz.csv)")
+    else:
+        print("Keine auswertbaren Daten fuer den Kombinations-Test.")
+    print("\nHinweis: Auch hier zaehlt nur eine Variante, die in TRAIN UND TEST")
+    print("klar vor 'Nur EMA50' liegt - nicht nur im ungetrennten Durchschnitt.")
+
+    print(f"\n{'=' * 60}")
+    print("VERTIEFTE ANALYSE: RSI-Sweet-Spot & EMA50 ueber mehrere Zeithorizonte")
+    print(f"{'=' * 60}")
+    print("Getrennt: nur RSI-Sweet-Spot, RSI+EMA50 kombiniert, mit/ohne Corona-")
+    print("Crash, und aufgeteilt nach ETF-Volatilitaet (siehe Chat).\n")
+
+    rsi_sweet_maske = (df["rsi"] >= 20) & (df["rsi"] <= 30)
+    ema50_ausreichend_maske = df["ema50_score"] >= 10
+    faktor_masken = {
+        "RSI Sweet Spot (20-30) allein": rsi_sweet_maske,
+        "RSI Sweet Spot + EMA50 (Score>=10)": rsi_sweet_maske & ema50_ausreichend_maske,
+    }
+
+    print("--- Gesamter Datensatz (inkl. aller Crashs) ---")
+    gesamt_df = faktor_zeithorizont_analyse(df, serien_cache, faktor_masken)
+    if not gesamt_df.empty:
+        print(gesamt_df.to_string(index=False))
+        gesamt_df.to_csv("backtest_tiefenanalyse_gesamt.csv", index=False)
+    else:
+        print("Keine auswertbaren Daten.")
+
+    print("\n--- OHNE Corona-Crash (19.02.-07.04.2020 ausgeschlossen) ---")
+    ohne_crash_df = faktor_zeithorizont_analyse(df, serien_cache, faktor_masken, crash_perioden=CRASH_PERIODEN)
+    if not ohne_crash_df.empty:
+        print(ohne_crash_df.to_string(index=False))
+        ohne_crash_df.to_csv("backtest_tiefenanalyse_ohne_crash.csv", index=False)
+    else:
+        print("Keine auswertbaren Daten.")
+
+    print("\n--- ETF-Volatilitaet: Rangliste (annualisiert, Prozent) ---")
+    vola = berechne_ticker_volatilitaet(serien_cache)
+    if not vola.empty:
+        print(vola.to_string())
+        vola.to_csv("backtest_etf_volatilitaet.csv")
+
+        median_vol = vola.median()
+        volatile_ticker = vola[vola > median_vol].index.tolist()
+        ruhige_ticker = vola[vola <= median_vol].index.tolist()
+        print(f"\nMedian-Volatilitaet: {median_vol:.1f}% -> {len(volatile_ticker)} volatile / "
+              f"{len(ruhige_ticker)} ruhige ETFs (Median-Split)")
+
+        print("\n--- Nur VOLATILE ETFs (oberhalb Median) ---")
+        volatil_df = faktor_zeithorizont_analyse(df, serien_cache, faktor_masken, ticker_filter=volatile_ticker)
+        if not volatil_df.empty:
+            print(volatil_df.to_string(index=False))
+            volatil_df.to_csv("backtest_tiefenanalyse_volatil.csv", index=False)
+
+        print("\n--- Nur RUHIGE ETFs (unterhalb Median) ---")
+        ruhig_df = faktor_zeithorizont_analyse(df, serien_cache, faktor_masken, ticker_filter=ruhige_ticker)
+        if not ruhig_df.empty:
+            print(ruhig_df.to_string(index=False))
+            ruhig_df.to_csv("backtest_tiefenanalyse_ruhig.csv", index=False)
+    else:
+        print("Keine Volatilitaets-Daten berechenbar.")
+
+    print("\nHinweis: 6M-Horizont (126 Handelstage) hat zwangslaeufig weniger")
+    print("Beobachtungen am aktuellen Rand der Historie (dort fehlt die noetige")
+    print("Zukunft noch) - kein Fehler, nur ein Randeffekt.")
+    print("geclusterte_rendite_pct ist die robustere Zahl bei zeitlich")
+    print("gehaeuften Signalen (wie beim Schwellen-Sweep oben).")
 
     print(f"\n{'-' * 60}")
     print(f"FRAGE 2: Haltedauer vs. Verkaufskurs (Episoden bei Schwelle {KAUFSIGNAL_SCHWELLE:.0f})")
