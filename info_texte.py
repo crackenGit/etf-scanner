@@ -317,7 +317,20 @@ def render_statistik_tab():
         "wie sehr vertraue ich einem *bereits ausgelösten* Signal" (sog.
         Meta-Labeling). Dafür wurden bei allen echten Kaufsignalen (Score ≥ 65,
         3.459 Episoden) systematisch alle verfügbaren Merkmale gegen "eigenes
-        Ziel erreicht" (4%/7%, exakt statt genähert) gescreent. Ergebnis:
+        Ziel erreicht" (4%/7%, exakt statt genähert) gescreent.
+
+        **So kombiniert man beide in der Praxis** (Dip Score entscheidet ZUERST,
+        ob überhaupt ein Signal vorliegt - die Trefferwahrscheinlichkeit ist die
+        Priorisierung DANACH, keine Alternative dazu):
+
+        | Situation | Einordnung |
+        |---|---|
+        | Kein Signal + niedrige/keine Trefferwahrsch. | Normalfall, nichts tun |
+        | Signal (🔥/🟡) + hohe Trefferwahrsch. (≥80%) | Stärkster Fall - lief historisch im Schnitt am weitesten |
+        | Signal + niedrige Trefferwahrsch. (<65%) | Mehrheitlich immer noch erfolgreich, aber kleinere erwartete Rendite - kein Ignorier-Grund, eher ein Kriterium für die Positionsgröße |
+        | Kein Signal, aber 💎 (Trefferwahrsch. ≥75%) | Score reicht noch nicht, aber die zwei stärksten Erfolgsfaktoren stimmen schon - Blick lohnt sich |
+
+        Ergebnis des Screenings:
 
         | Merkmal | Spanne (Prozentpunkte) |
         |---|---|
@@ -349,17 +362,20 @@ def render_statistik_tab():
         Trefferquote und tatsächliche Rendite bestätigen sich gegenseitig - kein
         Zufallsfund. Wichtig: Diese Einschätzung fließt bewusst **nicht** in den
         Dip Score selbst ein, sondern steht als eigene, unabhängige Information
-        daneben (siehe `trefferwahrscheinlichkeit.py`) - der Score beantwortet
-        "ist das ein Signal", diese Spalte "wie sehr vertraue ich diesem Signal".
+        daneben (siehe `trefferwahrscheinlichkeit.py`).
 
         **Gilt das Muster auch unterhalb der Softsignal-Schwelle?** Geprüft:
         dieselbe Kreuztabelle bei Score 40-65 (12.410 Episoden, quote_5pct statt
         eigenem Ziel) zeigt fast identische Werte (z.B. ATR 0-3/EMA50 hoch:
         90,2% vs. 91,5%) - **kein reiner Extrapolations-Kunstgriff**. Deshalb
-        gibt es jetzt das 💎-Symbol: Kandidaten ohne Signal, aber mit
+        gibt es das 💎-Symbol: Kandidaten ohne Signal, aber mit
         Trefferwahrsch. ≥75%, werden in der Watchlist als "verstecktes Juwel"
-        markiert - der Score reicht noch nicht, aber die zwei stärksten
-        bekannten Erfolgsfaktoren stimmen schon.
+        markiert.
+
+        ⚠️ **Einschränkung:** Manche Zellen der Tabelle beruhen auf wenig
+        Cluster (z.B. n=87 für die höchste Stufe im letzten Lauf) - eine
+        begründete Tendenz, keine Garantie. Das Forward-Tracking-Log zeigt mit
+        der Zeit, ob sich das in der Praxis hält.
         """)
 
         st.caption(
