@@ -85,81 +85,58 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # einfach hier ergänzen/entfernen/als erledigt streichen.
 OFFENE_PUNKTE = [
     {
-        "titel": "Exit-Ziel nach Trefferwahrscheinlichkeit staffeln",
-        "kontext": (
-            "Aktuell fixes Ziel (4%/7%) unabhängig davon, wie stark ATR+EMA50 "
-            "für das Signal sprechen. Die Backtest-Daten zeigen aber: starke "
-            "Signale (Trefferwahrsch. ≥90%) liefen im Schnitt +8,84% statt nur "
-            "+0,21% bei schwachen (<55%) - ein einheitliches 7%-Ziel könnte bei "
-            "den besten Signalen systematisch zu früh verkaufen. Naheliegender "
-            "nächster Schritt nach der Trefferwahrscheinlichkeits-Einführung."
-        ),
-        "status": "🔬 Genauer testen",
-    },
-    {
-        "titel": "Widerspruch: Score belohnt tiefes ATR, Trefferwahrsch. warnt davor",
-        "kontext": (
-            "Der Dip Score vergibt bis zum Cap (6 ATR) linear steigende Punkte "
-            "für tieferen Rückgang. Das Signal-Screening zeigt aber: UNTER den "
-            "bereits qualifizierenden Signalen sinkt die Erfolgsquote bei sehr "
-            "tiefem ATR wieder (89,3% bei 2-3 ATR -> 54,4% bei 10+ ATR, klar "
-            "monoton). Score und Trefferwahrscheinlichkeit bewerten dieselbe "
-            "Größe also gegenläufig - noch nicht aufgelöst, ob der Score selbst "
-            "einen früheren Peak statt eines Cap braucht."
-        ),
-        "status": "🔬 Genauer testen",
-    },
-    {
         "titel": "Marktregime-Bonus statt nur Neutralisierung",
         "kontext": (
             "Idee: bei Bärenmarkt einen Bonus-Multiplikator (>1.0) statt nur "
-            "Neutralität einsetzen. Erste Zahlen sprechen dafür in niedrigen/"
-            "mittleren Rohscore-Bereichen (30-75), drehen sich aber im höchsten "
-            "Bereich (75-100, der eigentlichen Kaufsignal-Schwelle) leicht um - "
-            "und dort ist die Stichprobe am dünnsten (10 Cluster). Braucht eine "
-            "eigene, gründlichere Prüfung (echte Formel simulieren, nicht nur "
-            "gleiche-Rohscore-Vergleich), nicht einfach übernehmen."
+            "Neutralität einsetzen. Erste Zahlen sprachen dafür in niedrigen/"
+            "mittleren Rohscore-Bereichen, drehten sich aber im höchsten "
+            "Bereich (der eigentlichen Kaufsignal-Schwelle) leicht um - und "
+            "dort war die Stichprobe am dünnsten. Braucht eine eigene, "
+            "gründlichere Prüfung mit Zeit-Split (echte Formel simulieren, "
+            "nicht nur gleiche-Rohscore-Vergleich), nicht einfach übernehmen."
         ),
         "status": "🔬 Genauer testen",
+    },
+    {
+        "titel": "10%-Exit-Ziel (volles Signal) noch nicht mit neuer Schwelle bestätigt",
+        "kontext": (
+            "ZIEL_RENDITE_VOLL_PCT wurde von 7% auf 10% angehoben, basierend auf "
+            "dem Exit-Sweep für 'Volles Signal >= 75' (alte Schwelle). Die "
+            "Kaufsignal-Schwelle wurde danach auf 80 anghoben - die Population "
+            "verschiebt sich dadurch leicht. Beim nächsten Backtest-Lauf mit "
+            "der tatsächlichen >=80-Population gegenprüfen, ob 10% weiterhin "
+            "das Optimum ist."
+        ),
+        "status": "🔬 Bei nächstem Lauf gegenprüfen",
     },
     {
         "titel": "Trefferwahrscheinlichkeits-Tabelle aktuell halten",
         "kontext": (
-            "Die Tabelle in trefferwahrscheinlichkeit.py ist ein eingefrorener "
-            "Schnappschuss vom Screening-Lauf (3.459 Episoden). Bei künftigen "
-            "Formel-Änderungen (z.B. am ATR-Cap, siehe oben) oder einfach nach "
-            "genug neuen Backtest-Daten sollte sie manuell neu berechnet werden, "
-            "sonst driftet sie von der aktuell laufenden Formel weg."
+            "Zuletzt aktualisiert auf Basis der v4-Formel (Score>=40, 12.827 "
+            "Episoden, gröbere 2x3-Bins wegen Zellenbesetzung). Bei künftigen "
+            "Formel-Änderungen oder einfach nach genug neuen Backtest-Daten "
+            "erneut neu berechnen, sonst driftet sie von der aktuell "
+            "laufenden Formel weg."
         ),
         "status": "🔧 Pflege bei Bedarf",
     },
     {
-        "titel": "Diversifikations-/Korrelationsfilter empirisch validieren",
+        "titel": "Diversifikationsfilter & Kontrollgruppe empirisch auswerten",
         "kontext": (
-            "Bisher nur logisch hergeleitet und mit aktuellen Korrelationswerten "
-            "verifiziert (z.B. SEC0.DE↔AIFS.DE), nicht rückblickend gebacktestet, "
-            "ob das Ausblenden korrelierter Signale tatsächlich zu besseren "
-            "Ergebnissen geführt hätte. Das Forward-Tracking-Log sammelt dafür "
-            "bereits Daten (loggt auch ausgeblendete Signale mit Grund) - "
-            "Auswertung ergibt erst nach einigen Monaten Sinn."
+            "Zwei Forward-Tracking-Fragen, die erst mit einigen Monaten Daten "
+            "sinnvoll auswertbar sind: (1) Hat das Ausblenden korrelierter "
+            "Signale tatsächlich zu besseren Ergebnissen geführt? (2) Die "
+            "neue Kontrollgruppe (5 beste Nicht-Signale/Tag) zeigt, ob die "
+            "Schwelle (70/80) wirklich sinnvoll trennt oder knapp darunter "
+            "liegende ETFs sich ebenso bewährt hätten."
         ),
         "status": "⏳ Daten sammeln",
     },
     {
-        "titel": "Softes-Signal-Ziel 3% vs. 4%",
-        "kontext": (
-            "Nach der Trend/GD200-Umkehr zeigte 3% im letzten Lauf leicht "
-            "bessere Rendite/Tag-Effizienz als das aktuell eingestellte 4%-Ziel "
-            "(ZIEL_RENDITE_SOFT_PCT). Könnte Rauschen aus einem einzelnen Lauf "
-            "sein - über 1-2 weitere Backtest-Läufe bestätigen, bevor geändert wird."
-        ),
-        "status": "🔍 Beobachten",
-    },
-    {
         "titel": "Konsumgüter: nur 2 ETFs im gesamten Universum",
         "kontext": (
-            "Zeigt im Signal-Screening durchgehend die schwächste Erfolgsquote "
-            "(33%), beruht aber nur auf 2 Tickern (XDWS.DE, ZPDS.DE) - keine "
+            "Zeigte im Signal-Screening durchgehend die schwächste Erfolgsquote, "
+            "beruht aber nur auf 2 Tickern (XDWS.DE, ZPDS.DE) - keine "
             "verlässliche Sektor-Aussage. Entscheidung offen: so lassen, "
             "streichen, oder mit weiteren Konsumgüter-ETFs für eine echte "
             "Sektor-Einschätzung ergänzen."
@@ -169,8 +146,8 @@ OFFENE_PUNKTE = [
     {
         "titel": "Marktphasen-Wechsel als Re-Backtest-Anlass",
         "kontext": (
-            "Die Bulle/Bär-Anzeige (mit Dauer in Handelstagen) ist jetzt da, "
-            "aber rein informativ - es gibt keinen automatischen Hinweis, WANN "
+            "Die Bulle/Bär-Anzeige (mit Dauer in Handelstagen) ist da, aber "
+            "rein informativ - es gibt keinen automatischen Hinweis, WANN "
             "genau ein Phasenwechsel bedeutsam genug für einen Re-Backtest ist. "
             "Bleibt vorerst eine manuelle Einschätzung."
         ),
