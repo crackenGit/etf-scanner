@@ -42,12 +42,8 @@ PORTFOLIO = [
         "buy_date": "2026-09-07",
         "buy_price": 22.77,
         "shares": 42,
-        "partially_sold": False,  # True setzen, sobald Tranche 1 verkauft wurde
-        "t1_sell_date": None,     # Datum von Teilverkauf 1 (z. B. '2026-07-15')
-        "t1_sell_price": None,    # Tatsächlicher Verkaufskurs von T1 (Optional: Falls leer, wird der EMA50 genutzt)
-        "sold": False,  # True setzen, sobald Tranche 2 verkauft wurde
-        "t2_sell_date": None,     # Datum von Teilverkauf 2 (z. B. '2026-07-15')
-        "t2_sell_price": None,    # Tatsächlicher Verkaufskurs von T2 
-
+        "sold": False,
+        "dip_score_bei_kauf": 69.2,   # zur Dokumentation, wird aber NICHT automatisch zu "soft"
+        "signal_stufe": "soft",       # das ist der Eintrag, der tatsächlich zählt
     },
 ]
