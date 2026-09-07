@@ -169,15 +169,52 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
     regime_status = watch[0]["Marktregime_OK"] if watch else True
     regime_seit = watch[0].get("Marktregime_Seit_Tagen") if watch else None
     seit_text = f" (seit {regime_seit} Handelstagen)" if regime_seit else ""
-    if regime_status:
-        st.caption(f"🐂 **Marktphase: Bulle**{seit_text} - Referenzindex über GD200. Rein informativ, kein Einfluss auf den Score.")
-    else:
-        st.caption(f"🐻 **Marktphase: Bär**{seit_text} - Referenzindex unter GD200. Rein informativ, kein Einfluss auf den Score.")
 
     anzahl_kaufsignale = sum(1 for e in watch if e["Ist_Kaufsignal"])
     anzahl_soft_signale = sum(1 for e in watch if e["Ist_Soft_Signal"])
 
     if watch:
+        with st.expander("ℹ️ Legende & Hinweise", expanded=False):
+            if regime_status:
+                st.caption(f"🐂 **Marktphase: Bulle**{seit_text} - Referenzindex über GD200. Rein informativ, kein Einfluss auf den Score.")
+            else:
+                st.caption(f"🐻 **Marktphase: Bär**{seit_text} - Referenzindex unter GD200. Rein informativ, kein Einfluss auf den Score.")
+
+            st.caption(
+                "💡 **Farblegende:** 🥇/🥈/🥉 Top Dip-Scores | 🔥 Kaufsignal "
+                "(Score ≥ Schwelle, Ziel ~10%+) | 🟡 Softes Signal (Ziel ~5%+) | "
+                "🟪 Lila: Im Portfolio | "
+                "RSI: 🟩 ≤31.9, ⬜ 32-35, 🟥 >35 | "
+                "Live: 🟩 RSI-Tendenz ↑ (Erholung), ⬜ unverändert, 🟥 RSI-Tendenz ↓ (noch fallend) | "
+                "GD200: 🟩 klar drüber, ⬜ knapp (≤1%), 🟥 drunter | "
+                "Trefferwahrsch.: 🟩 ≥75%, ⬜ 60-75%, 🟥 <60%"
+            )
+            st.caption(
+                "🎯 **Trefferwahrscheinlichkeit** ist ein zweites, vom Dip Score "
+                "komplett getrenntes Modell - schätzt anhand von ATR-Rückgang und "
+                "EMA50-Potenzial, wie oft ein *bereits ausgelöstes* Signal historisch "
+                "sein eigenes Ziel erreicht hat, inkl. Ø Rendite und Stichprobengröße. "
+                "Beeinflusst den Dip Score selbst nicht. Details im Statistik-Bereich oben."
+            )
+            st.caption(
+                "💎 **Verstecktes Juwel:** Score reicht (noch) nicht für ein Signal, "
+                "aber die beiden stärksten bekannten Erfolgsfaktoren (ATR-Rückgang + "
+                "EMA50-Potenzial) sind schon günstig (Trefferwahrsch. ≥75%) - lohnt "
+                "einen Blick, auch ohne 🔥/🟡."
+            )
+            st.caption(
+                "↓↓ in der Trend-Spalte bedeutet volle Punktzahl (gebrochene "
+                "Trendstruktur), ↑↑ bedeutet 0 Punkte - **umgekehrt** zur "
+                "klassischen Lesart von 'Trend intakt = gut'. Details dazu oben "
+                "unter 'Wann entsteht ein Kaufsignal?'."
+            )
+            st.caption(
+                "🕒 vor dem Namen bedeutet: Live-Abruf gerade nicht möglich "
+                "(z. B. außerhalb der Handelszeiten), es wird der letzte "
+                "erfolgreich geladene Stand gezeigt - Zeitpunkt siehe Spalte "
+                "'Zeitstempel'."
+            )
+
         if anzahl_kaufsignale > 0:
             st.success(
                 f"**{anzahl_kaufsignale} Kaufsignal(e) gefunden!** "
@@ -199,29 +236,6 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
                 f"Aktuell kein ETF über der soften Signal-Schwelle von "
                 f"{SOFT_KAUFSIGNAL_SCHWELLE:.0f} Punkten."
             )
-
-        st.caption(
-            "💡 **Farblegende:** 🥇/🥈/🥉 Top Dip-Scores | 🔥 Kaufsignal "
-            "(Score ≥ Schwelle, Ziel ~10%+) | 🟡 Softes Signal (Ziel ~5%+) | "
-            "🟪 Lila: Im Portfolio | "
-            "RSI: 🟩 ≤31.9, ⬜ 32-35, 🟥 >35 | "
-            "Live: 🟩 RSI-Tendenz ↑ (Erholung), ⬜ unverändert, 🟥 RSI-Tendenz ↓ (noch fallend) | "
-            "GD200: 🟩 klar drüber, ⬜ knapp (≤1%), 🟥 drunter | "
-            "Trefferwahrsch.: 🟩 ≥75%, ⬜ 60-75%, 🟥 <60%"
-        )
-        st.caption(
-            "🎯 **Trefferwahrscheinlichkeit** ist ein zweites, vom Dip Score "
-            "komplett getrenntes Modell - schätzt anhand von ATR-Rückgang und "
-            "EMA50-Potenzial, wie oft ein *bereits ausgelöstes* Signal historisch "
-            "sein eigenes Ziel erreicht hat, inkl. Ø Rendite und Stichprobengröße. "
-            "Beeinflusst den Dip Score selbst nicht. Details im Statistik-Bereich oben."
-        )
-        st.caption(
-            "💎 **Verstecktes Juwel:** Score reicht (noch) nicht für ein Signal, "
-            "aber die beiden stärksten bekannten Erfolgsfaktoren (ATR-Rückgang + "
-            "EMA50-Potenzial) sind schon günstig (Trefferwahrsch. ≥75%) - lohnt "
-            "einen Blick, auch ohne 🔥/🟡."
-        )
 
         col_sort1, col_sort2 = st.columns([2, 2])
         with col_sort1:
@@ -540,19 +554,6 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
             styled_df = display_df.style.apply(style_watchlist_cells, axis=None)
             st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-        st.caption(
-            "↓↓ in der Trend-Spalte bedeutet volle Punktzahl (gebrochene "
-            "Trendstruktur), ↑↑ bedeutet 0 Punkte - **umgekehrt** zur "
-            "klassischen Lesart von 'Trend intakt = gut'. Details dazu oben "
-            "unter 'Wann entsteht ein Kaufsignal?'."
-        )
-        st.caption(
-            "🕒 vor dem Namen bedeutet: Live-Abruf gerade nicht möglich "
-            "(z. B. außerhalb der Handelszeiten), es wird der letzte "
-            "erfolgreich geladene Stand gezeigt - Zeitpunkt siehe Spalte "
-            "'Zeitstempel'."
-        )
-
         # --- Sektor-gruppierte Anzeige der "neuen Chancen" ---
         if not df_neu.empty:
             sektor_reihenfolge = (
@@ -573,11 +574,12 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
                 f"ausgeblendet (bereits investierter Sektor oder "
                 f">{KORRELATIONS_SCHWELLE * 100:.0f}% korreliert)"
             ):
-                for _, row in df_ausgeblendet.sort_values(
+                df_ausgeblendet_sortiert = df_ausgeblendet.sort_values(
                     "Dip Score", ascending=False
-                ).iterrows():
-                    st.caption(
-                        f"**{row['Name']}** ({row['Sektor']}) - {row['Ausblend_Grund']}"
-                    )
+                ).reset_index(drop=True)
+                rendere_watchlist_gruppe(df_ausgeblendet_sortiert)
+                st.caption("**Ausblend-Gründe:**")
+                for _, row in df_ausgeblendet_sortiert.iterrows():
+                    st.caption(f"**{row['Name']}** - {row['Ausblend_Grund']}")
     else:
         st.write("Keine ETFs in der Watchlist.")
