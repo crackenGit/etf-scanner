@@ -50,13 +50,29 @@ KONTROLLGRUPPE_GROESSE = 5  # Anzahl der taeglich zusaetzlich geloggten "besten 
 
 
 @st.cache_resource
-def hole_signal_sheet():
-    """Verbindung zum Google Sheet fuer das Forward-Tracking-Log. Gibt None
-    zurueck, falls die Secrets fehlen oder die Verbindung fehlschlaegt - die
-    App laeuft dann einfach ohne Logging normal weiter. Der Fehlergrund wird
-    zusaetzlich in st.session_state abgelegt, damit er in der UI sichtbar
-    gemacht werden kann (siehe signal_log_status()), statt still zu
-    verschwinden - Cache-Fehlschlaege sonst schwer zu diagnostizieren."""
+def _verbindungs_zaehler():
+    """Zaehlt, wie oft _verbinde_signal_sheet() TATSAECHLICH ausgefuehrt
+    wurde (nicht nur aus dem Cache bedient) - seit dem letzten echten
+    Prozess-Start/Reboot. Reines Diagnose-Hilfsmittel fuer das 'Signal-Log
+    zeigt manchmal noch nicht versucht'-Raetsel (siehe Chat) - hilft zu
+    unterscheiden, ob der Verbindungsaufbau ueberhaupt lief oder ob
+    logge_signale() in der betroffenen Sitzung gar nicht erreicht wurde."""
+    return {"anzahl": 0}
+
+
+@st.cache_resource
+def _verbinde_signal_sheet():
+    """Reine Verbindungslogik zum Google Sheet - gecacht ueber ALLE Sitzungen
+    hinweg (Streamlit fuehrt den Funktionskoerper nur einmal pro App-Prozess
+    aus, nicht pro Nutzer-Sitzung). Setzt BEWUSST kein st.session_state -
+    das macht hole_signal_sheet() separat (siehe dort), damit jede einzelne
+    Sitzung ihren eigenen, aktuellen Status sieht, statt bei einem
+    Cache-Treffer faelschlich 'noch nicht versucht' anzuzeigen, obwohl die
+    Verbindung laengst in einer frueheren Sitzung erfolgreich aufgebaut und
+    gecacht wurde (siehe Chat).
+
+    Gibt (sheet, fehlertext) zurueck - fehlertext ist None bei Erfolg."""
+    _verbindungs_zaehler()["anzahl"] += 1
     try:
         import gspread
         from google.oauth2.service_account import Credentials
@@ -77,12 +93,38 @@ def hole_signal_sheet():
             # Datenzeilen bleiben unberuehrt (fehlende neue Spalten zeigen
             # sich einfach als leere Zellen, kein Datenverlust).
             sheet.update("A1", [SIGNAL_LOG_SPALTEN])
-        st.session_state["signal_log_fehler"] = None
-        return sheet
+        return sheet, None
     except Exception as e:
-        st.session_state["signal_log_fehler"] = f"{type(e).__name__}: {e!r}"
-        st.session_state["signal_log_traceback"] = traceback.format_exc()
-        return None
+        return None, f"{type(e).__name__}: {e!r}\n{traceback.format_exc()}"
+
+
+def hole_signal_sheet():
+    """Holt die (gecachte) Sheet-Verbindung und setzt DABEI IMMER den Status
+    fuer die AKTUELLE Sitzung neu - unabhaengig davon, ob der Cache gerade
+    getroffen oder die Verbindung neu aufgebaut wurde. Das trennt die teure,
+    cachebare Verbindung von der billigen, sitzungsspezifischen Status-
+    Anzeige (siehe _verbinde_signal_sheet fuer die Begruendung)."""
+    st.session_state["signal_log_hole_versucht"] = True
+    sheet, fehler = _verbinde_signal_sheet()
+    if fehler is None:
+        st.session_state["signal_log_fehler"] = None
+    else:
+        kopf, _, rest = fehler.partition("\n")
+        st.session_state["signal_log_fehler"] = kopf
+        st.session_state["signal_log_traceback"] = rest
+    return sheet
+
+
+def erzwinge_neuverbindung():
+    """Leert GEZIELT nur den Sheets-Verbindungs-Cache (nicht den gesamten
+    App-Cache, z.B. bleibt der Wochenend-Fallback in scanner_data.py
+    unberuehrt) - Aequivalent zum manuellen 'Clear cache' im Streamlit-Menue,
+    das sich in der Praxis als zuverlässiger erwiesen hat als 'Reboot app'
+    (siehe Chat). Ueber einen Button in der App direkt nutzbar, statt jedes
+    Mal durchs Menue zu muessen."""
+    _verbinde_signal_sheet.clear()
+    for key in ("signal_log_fehler", "signal_log_traceback", "signal_log_hole_versucht"):
+        st.session_state.pop(key, None)
 
 
 def signal_log_status():
@@ -94,10 +136,14 @@ def signal_log_status():
     if fehler is None:
         st.caption("✅ **Signal-Log:** aktiv (Google Sheet verbunden)")
     else:
+        wurde_versucht = st.session_state.get("signal_log_hole_versucht", False)
+        zaehler = _verbindungs_zaehler()["anzahl"]
         st.caption(
             f"🔕 **Signal-Log:** inaktiv - {fehler}. "
             f"Secrets pruefen (Settings -> Secrets) und danach **Reboot app** "
-            f"(nicht nur Rerun) - siehe Chat."
+            f"(nicht nur Rerun) - siehe Chat. "
+            f"[Diagnose: hole_signal_sheet in dieser Sitzung aufgerufen = "
+            f"{wurde_versucht}, echte Verbindungsversuche seit Prozessstart = {zaehler}]"
         )
         tb = st.session_state.get("signal_log_traceback")
         if tb:
