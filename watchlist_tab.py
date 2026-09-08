@@ -22,7 +22,7 @@ from dip_score import (
     MAX_DIP_SCORE,
 )
 from scanner_data import berechne_indikatoren, hole_etf_name
-from signal_log import logge_signale, signal_log_status
+from signal_log import logge_signale, signal_log_status, erzwinge_neuverbindung
 
 
 def fuehre_scan_durch(etfs, portfolio_isins):
@@ -340,6 +340,11 @@ def render_watchlist_tab(sektor_lookup, portfolio_isins, aktive_positionen):
             logge_signale(df_watch)
             st.session_state["signale_geloggt"] = True
         signal_log_status()
+        if st.session_state.get("signal_log_fehler") is not None:
+            if st.button("🔄 Signal-Log neu verbinden", key="signal_log_reconnect"):
+                erzwinge_neuverbindung()
+                st.session_state.pop("signale_geloggt", None)
+                st.rerun()
 
         VERSTECKTES_JUWEL_SCHWELLE = 75.0  # ab dieser Trefferwahrsch. gilt ein
                                             # Nicht-Signal als "verstecktes Juwel"
