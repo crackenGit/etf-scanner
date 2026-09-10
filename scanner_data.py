@@ -264,6 +264,29 @@ def berechne_indikatoren(isin, ticker=None):
     except Exception:
         pass
 
+    # --- DATENLUECKEN-ERKENNUNG ---
+    # WICHTIG: laeuft VOR dem konservativen Modus unten, auf den noch
+    # UNGEKUERZTEN Rohdaten - der konservative Modus wuerde bei einer Luecke
+    # direkt am aktuellen Rand sonst genau den Tag wegschneiden, der die
+    # Luecke ueberhaupt noch sichtbar machen wuerde (siehe Chat: konkreter
+    # Fall bei IE000U6ABUJ7 - der 10.09. zeigte den Rueckgang, wurde aber vom
+    # konservativen Modus als "heute, noch nicht bestaetigt" entfernt, WOMIT
+    # die Luecken-Pruefung faelschlich nur noch 07.09->08.09 saehe, statt der
+    # eigentlich fehlenden 08.09->10.09).
+    #
+    # Reine Kalendertage reichen dafuer NICHT - eine fehlende Wochentag-Luecke
+    # mitten in der Woche (Di->Do, 2 Kalendertage) ist sogar KUERZER als ein
+    # normales Wochenende (Fr->Mo, 3 Kalendertage)! Stattdessen ueber
+    # pd.bdate_range zaehlen, wie viele Handelstage (Mo-Fr) zwischen den
+    # letzten beiden Datenpunkten liegen. Ein einzelner uebersehener Feiertag
+    # kann faelschlich mit anfallen (False Positive) - bewusst in Kauf
+    # genommen: ein zu Unrecht gezeigtes 🕒 ist harmlos, ein uebersehener
+    # echter Kursrueckgang waere es nicht.
+    fehlende_handelstage = None
+    if len(close) >= 2:
+        erwartete_handelstage = pd.bdate_range(close.index[-2], close.index[-1])
+        fehlende_handelstage = len(erwartete_handelstage) - 2
+
     # --- KONSERVATIVER MODUS: heutigen Datenpunkt ggf. ausblenden ---
     # Solange der heutige Schlusskurs noch nicht sicher final bestätigt ist
     # (Börse noch offen ODER Schluss liegt noch keine DATENSTAND_CUTOFF_STUNDE
@@ -372,8 +395,14 @@ def berechne_indikatoren(isin, ticker=None):
         "regime_seit_tagen": regime_seit_tagen,
         "yahoo_zeit": yahoo_zeit,
         "return_serie": close.pct_change().dropna().tail(180),
-        "ist_stale": False,
-        "stale_seit": None,
+        "ist_stale": fehlende_handelstage is not None and fehlende_handelstage > 0,
+        "stale_seit": (
+            f"Datenlücke erkannt: letzter Kurs vom {close.index[-1].strftime('%d.%m.%Y')}, "
+            f"davor fehlen {fehlende_handelstage} Handelstag(e) - möglicherweise fehlt "
+            f"ein Handelstag bei Yahoo Finance"
+            if fehlende_handelstage is not None and fehlende_handelstage > 0
+            else None
+        ),
     }
     _letzte_bekannte_daten()[isin] = (
         ergebnis,
