@@ -204,6 +204,12 @@ with st.sidebar.expander("🔍 Debug: Einzelne ISIN prüfen"):
                 f"Kurs: **{debug_data['close']:.2f}** | "
                 f"RSI: **{debug_data['rsi']:.2f}**"
             )
+            st.caption(
+                f"🔍 Lücken-Diagnose: fehlende_handelstage = "
+                f"`{debug_data.get('fehlende_handelstage_debug')}` "
+                f"(0 oder None = keine Lücke erkannt, >0 = so viele Handelstage "
+                f"fehlen zwischen den letzten beiden Kurspunkten)"
+            )
         else:
             st.error(f"Score nicht berechenbar. Grund: {debug_fehler}")
 
