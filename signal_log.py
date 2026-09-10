@@ -25,6 +25,7 @@ Teil des app.py-Refactors - reine Verschiebung, keine Verhaltensänderung.
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import time
 import traceback
 
 import streamlit as st
@@ -71,31 +72,40 @@ def _verbinde_signal_sheet():
     Verbindung laengst in einer frueheren Sitzung erfolgreich aufgebaut und
     gecacht wurde (siehe Chat).
 
-    Gibt (sheet, fehlertext) zurueck - fehlertext ist None bei Erfolg."""
+    Gibt (sheet, fehlertext) zurueck - fehlertext ist None bei Erfolg.
+    Bis zu 3 Versuche mit kurzer Pause dazwischen (siehe Chat: ein
+    503-Fehler war schlicht Google selbst voruebergehend nicht erreichbar,
+    kein Bug bei uns - dasselbe Retry-Muster wie schon bei den Yahoo-
+    Finance-Abrufen in scanner_data.py)."""
     _verbindungs_zaehler()["anzahl"] += 1
-    try:
-        import gspread
-        from google.oauth2.service_account import Credentials
+    letzter_fehler = None
+    for versuch in range(3):
+        try:
+            import gspread
+            from google.oauth2.service_account import Credentials
 
-        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-        creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"], scopes=scopes
-        )
-        client = gspread.authorize(creds)
-        sheet = client.open_by_key(st.secrets["signal_log_sheet_id"]).sheet1
-        werte = sheet.get_all_values()
-        if not werte:
-            sheet.append_row(SIGNAL_LOG_SPALTEN)
-        elif werte[0] != SIGNAL_LOG_SPALTEN:
-            # Header existiert, ist aber veraltet (z.B. neue Spalte wie
-            # Formel_Version hinzugekommen) - Zeile 1 in-place ueberschreiben,
-            # statt eine zusaetzliche Kopfzeile einzufuegen. Bestehende
-            # Datenzeilen bleiben unberuehrt (fehlende neue Spalten zeigen
-            # sich einfach als leere Zellen, kein Datenverlust).
-            sheet.update("A1", [SIGNAL_LOG_SPALTEN])
-        return sheet, None
-    except Exception as e:
-        return None, f"{type(e).__name__}: {e!r}\n{traceback.format_exc()}"
+            scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+            creds = Credentials.from_service_account_info(
+                st.secrets["gcp_service_account"], scopes=scopes
+            )
+            client = gspread.authorize(creds)
+            sheet = client.open_by_key(st.secrets["signal_log_sheet_id"]).sheet1
+            werte = sheet.get_all_values()
+            if not werte:
+                sheet.append_row(SIGNAL_LOG_SPALTEN)
+            elif werte[0] != SIGNAL_LOG_SPALTEN:
+                # Header existiert, ist aber veraltet (z.B. neue Spalte wie
+                # Formel_Version hinzugekommen) - Zeile 1 in-place ueberschreiben,
+                # statt eine zusaetzliche Kopfzeile einzufuegen. Bestehende
+                # Datenzeilen bleiben unberuehrt (fehlende neue Spalten zeigen
+                # sich einfach als leere Zellen, kein Datenverlust).
+                sheet.update("A1", [SIGNAL_LOG_SPALTEN])
+            return sheet, None
+        except Exception as e:
+            letzter_fehler = f"{type(e).__name__}: {e!r}\n{traceback.format_exc()}"
+            if versuch < 2:
+                time.sleep(2.0)
+    return None, letzter_fehler
 
 
 def hole_signal_sheet():
