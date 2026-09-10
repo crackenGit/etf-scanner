@@ -395,14 +395,15 @@ def berechne_indikatoren(isin, ticker=None):
         "regime_seit_tagen": regime_seit_tagen,
         "yahoo_zeit": yahoo_zeit,
         "return_serie": close.pct_change().dropna().tail(180),
-        "ist_stale": fehlende_handelstage is not None and fehlende_handelstage > 0,
-        "stale_seit": (
-            f"Datenlücke erkannt: letzter Kurs vom {close.index[-1].strftime('%d.%m.%Y')}, "
-            f"davor fehlen {fehlende_handelstage} Handelstag(e) - möglicherweise fehlt "
-            f"ein Handelstag bei Yahoo Finance"
-            if fehlende_handelstage is not None and fehlende_handelstage > 0
-            else None
-        ),
+        # TEMPORAER DEAKTIVIERT (siehe Chat): die Luecken-Erkennung loeste bei
+        # praktisch allen ETFs gleichzeitig aus - das deutet auf einen Bug in
+        # der Pruefung selbst hin, nicht auf echte Luecken ueberall. Bis das
+        # diagnostiziert ist, bleibt ist_stale hier bewusst immer False; der
+        # berechnete Wert wird trotzdem mitgegeben, um im Debug-Bereich
+        # sichtbar zu sein, ohne die Watchlist mit falschen Warnungen zu fluten.
+        "ist_stale": False,
+        "stale_seit": None,
+        "fehlende_handelstage_debug": fehlende_handelstage,
     }
     _letzte_bekannte_daten()[isin] = (
         ergebnis,
