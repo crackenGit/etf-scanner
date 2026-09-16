@@ -225,6 +225,8 @@ def berechne_indikatoren(isin, ticker=None):
         return None, (kandidaten[0] if kandidaten else "N/A"), letzter_fehler
 
     yahoo_zeit = "k.A."
+    fi = None
+    intraday = None
     try:
         if erfolgreicher_ticker:
             t_obj = yf.Ticker(erfolgreicher_ticker)
@@ -248,12 +250,26 @@ def berechne_indikatoren(isin, ticker=None):
     low = data["Low"].dropna() if "Low" in data else close
     high = data["High"].dropna() if "High" in data else close
 
-    # --- LIVE-WERTE: immer der neueste verfügbare Punkt, bevor der
-    #     konservative Modus ihn ggf. verwirft. Rein zur Beobachtung/Tendenz,
-    #     fließt NICHT in den Dip Score ein. ---
+    # --- LIVE-WERTE: ECHTER Intraday-Kurs (fast_info/Minutenkerze), NICHT
+    #     nur der letzte Tagesbalken (siehe Chat) ---
+    # Vorher wurde hier einfach close.iloc[-1] genommen - das war zufaellig
+    # meist ungleich dem spaeter fuer den Score verwendeten "Kurs", weil
+    # dieser haeufig weggekuerzt wurde (konservativer Modus). Seit der
+    # Datumsluecken-Heuristik oben wird der letzte Tagesbalken aber oefter
+    # BEHALTEN - dann waeren "Live" und "Kurs" identisch und die Pfeil-
+    # Tendenz (wird's gerade besser/schlechter?) ginge verloren. Nutzt
+    # deshalb denselben fast_info/intraday-Abruf von oben (kein Extra-
+    # Request) fuer einen wirklich separaten, aktuelleren Preis.
     live_close, live_rsi = None, None
     try:
-        live_close = float(close.iloc[-1])
+        echter_live_preis = None
+        if fi is not None and getattr(fi, "last_price", None):
+            echter_live_preis = float(fi.last_price)
+        elif intraday is not None and not intraday.empty and "Close" in intraday:
+            echter_live_preis = float(intraday["Close"].dropna().iloc[-1])
+
+        live_close = echter_live_preis if echter_live_preis is not None else float(close.iloc[-1])
+
         live_delta = close.diff()
         live_gain = live_delta.clip(lower=0)
         live_loss = -1 * live_delta.clip(upper=0)
