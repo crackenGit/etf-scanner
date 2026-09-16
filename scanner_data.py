@@ -261,12 +261,22 @@ def berechne_indikatoren(isin, ticker=None):
     # deshalb denselben fast_info/intraday-Abruf von oben (kein Extra-
     # Request) fuer einen wirklich separaten, aktuelleren Preis.
     live_close, live_rsi = None, None
+    live_quelle_debug = "unbekannt"
     try:
         echter_live_preis = None
         if fi is not None and getattr(fi, "last_price", None):
             echter_live_preis = float(fi.last_price)
+            live_quelle_debug = "fast_info.last_price"
         elif intraday is not None and not intraday.empty and "Close" in intraday:
             echter_live_preis = float(intraday["Close"].dropna().iloc[-1])
+            live_quelle_debug = "intraday-Minutenkerze"
+        else:
+            live_quelle_debug = (
+                f"KEINE echte Live-Quelle verfuegbar (fi={'vorhanden' if fi is not None else 'None'}, "
+                f"fi.last_price={getattr(fi, 'last_price', 'Attribut fehlt') if fi is not None else '-'}, "
+                f"intraday_leer={intraday.empty if intraday is not None else 'kein intraday-Objekt'}) "
+                f"- Fallback auf Tagesbalken (= identisch mit Kurs)"
+            )
 
         live_close = echter_live_preis if echter_live_preis is not None else float(close.iloc[-1])
 
@@ -455,6 +465,7 @@ def berechne_indikatoren(isin, ticker=None):
             )
         ),
         "fehlende_handelstage_debug": fehlende_handelstage,
+        "live_quelle_debug": live_quelle_debug,
     }
     _letzte_bekannte_daten()[isin] = (
         ergebnis,
