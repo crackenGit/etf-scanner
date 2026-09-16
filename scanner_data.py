@@ -293,17 +293,39 @@ def berechne_indikatoren(isin, ticker=None):
     # zurück), wird stattdessen der letzte bestätigte Vortag verwendet. Das
     # verhindert, dass RSI/Kursrückgang auf Basis einer noch laufenden oder
     # frisch-vorläufigen Tageskerze berechnet werden.
+    #
+    # AUSNAHME (siehe Chat): Besteht GLEICHZEITIG eine Datenluecke direkt vor
+    # diesem "heutigen" Punkt, wird er NICHT verworfen, sondern BEHALTEN.
+    # Arbeitshypothese (Stand Chat, seit Kurzem fast taeglich beobachtet -
+    # ein echter Datenausfall an fast jedem Tag waere unplausibel, ein
+    # systematischer Datums-Versatz bei Yahoo dagegen nicht): Der KURS selbst
+    # ist vermutlich korrekt, nur das DATUM ist bei Yahoo neuerdings falsch
+    # zugeordnet (z.B. Zeitzonen-Umstellung auf Yahoo-Seite) - der Wert wird
+    # deshalb als vertrauenswuerdig behandelt und fliesst normal in RSI/Score
+    # ein, nur das Datum wird als unsicher gekennzeichnet, nicht der Kurs.
+    heuristik_hinweis = None
     try:
         jetzt_berlin = datetime.now(ZoneInfo("Europe/Berlin"))
         letztes_datum = close.index[-1].date()
-        if (
+        ist_heute_und_unbestaetigt = (
             letztes_datum == jetzt_berlin.date()
             and jetzt_berlin.time() < dt_time(DATENSTAND_CUTOFF_STUNDE, 0)
             and len(close) > 1
-        ):
-            close = close.iloc[:-1]
-            low = low.iloc[:-1]
-            high = high.iloc[:-1]
+        )
+        if ist_heute_und_unbestaetigt:
+            if fehlende_handelstage is not None and fehlende_handelstage > 0:
+                heuristik_hinweis = (
+                    f"Datum vermutlich ungenau: Kurs ist bei Yahoo als "
+                    f"{letztes_datum.strftime('%d.%m.%Y')} ('heute') datiert, aber "
+                    f"davor fehlen {fehlende_handelstage} Handelstag(e) - der Kurswert "
+                    f"selbst dürfte korrekt sein, vermutlich nur falsch datiert "
+                    f"(z.B. Zeitzonen-Versatz bei Yahoo)."
+                )
+                # close NICHT kuerzen - der Punkt wird als Naeherung behalten
+            else:
+                close = close.iloc[:-1]
+                low = low.iloc[:-1]
+                high = high.iloc[:-1]
     except Exception:
         pass
 
@@ -395,20 +417,26 @@ def berechne_indikatoren(isin, ticker=None):
         "regime_seit_tagen": regime_seit_tagen,
         "yahoo_zeit": yahoo_zeit,
         "return_serie": close.pct_change().dropna().tail(180),
-        # Wieder aktiviert (siehe Chat): die breite Streuung ueber fast das
-        # gesamte Universum, mit genau EINEM belegten Gegenbeispiel
-        # (LU1834986900 ohne Luecke), spricht für ein echtes, aber
-        # ungewoehnlich breites Yahoo-seitiges Verarbeitungsproblem fuer einen
-        # einzelnen Handelstag - nicht fuer einen Zaehlfehler in der Pruefung
-        # selbst (der wuerde vermutlich ausnahmslos ALLE ETFs gleich
-        # behandeln, nicht nur die meisten).
-        "ist_stale": fehlende_handelstage is not None and fehlende_handelstage > 0,
+        # Zwei Faelle (siehe Chat):
+        # 1) heuristik_hinweis gesetzt: "heutiger" Punkt wurde trotz Luecke
+        #    behalten, als moeglicher Vortageskurs - eigene, deutlich
+        #    gekennzeichnete Meldung.
+        # 2) sonst normale Luecken-Erkennung wie zuvor (breite Streuung ueber
+        #    fast das gesamte Universum, mit einem belegten Gegenbeispiel,
+        #    sprach fuer ein echtes Yahoo-seitiges Problem, kein Zaehlfehler).
+        "ist_stale": heuristik_hinweis is not None or (
+            fehlende_handelstage is not None and fehlende_handelstage > 0
+        ),
         "stale_seit": (
-            f"Datenlücke erkannt: letzter Kurs vom {close.index[-1].strftime('%d.%m.%Y')}, "
-            f"davor fehlen {fehlende_handelstage} Handelstag(e) - möglicherweise fehlt "
-            f"ein Handelstag bei Yahoo Finance"
-            if fehlende_handelstage is not None and fehlende_handelstage > 0
-            else None
+            heuristik_hinweis
+            if heuristik_hinweis is not None
+            else (
+                f"Datenlücke erkannt: letzter Kurs vom {close.index[-1].strftime('%d.%m.%Y')}, "
+                f"davor fehlen {fehlende_handelstage} Handelstag(e) - möglicherweise fehlt "
+                f"ein Handelstag bei Yahoo Finance"
+                if fehlende_handelstage is not None and fehlende_handelstage > 0
+                else None
+            )
         ),
         "fehlende_handelstage_debug": fehlende_handelstage,
     }
