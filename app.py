@@ -210,6 +210,10 @@ with st.sidebar.expander("🔍 Debug: Einzelne ISIN prüfen"):
                 f"(0 oder None = keine Lücke erkannt, >0 = so viele Handelstage "
                 f"fehlen zwischen den letzten beiden Kurspunkten)"
             )
+            st.caption(
+                f"🔍 Live-Kurs-Quelle: `{debug_data.get('live_quelle_debug')}` "
+                f"(Live={debug_data['live_close']:.2f})"
+            )
         else:
             st.error(f"Score nicht berechenbar. Grund: {debug_fehler}")
 
