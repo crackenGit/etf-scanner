@@ -51,7 +51,7 @@ PORTFOLIO = [
         "isin": "LU2265794946",
         "name": "UBS Solactive China Technology",
         "buy_date": "2026-10-02",
-        "buy_price": 8.175,
+        "buy_price": 5.175,
         "shares": 89,
         "sold": False,
         "dip_score_bei_kauf": 72.2,   # zur Dokumentation, wird aber NICHT automatisch zu "soft"
