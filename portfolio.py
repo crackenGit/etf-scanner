@@ -57,4 +57,15 @@ PORTFOLIO = [
         "dip_score_bei_kauf": 72.2,   # zur Dokumentation, wird aber NICHT automatisch zu "soft"
         "signal_stufe": "soft",       # das ist der Eintrag, der tatsächlich zählt
     },
+    {
+        "ticker": "CNFY.DE",
+        "isin": "IE000AWRDWI7",
+        "name": "Invesco ChiNext 50",
+        "buy_date": "2026-10-16",
+        "buy_price": 8.12,
+        "shares": 123,
+        "sold": False,
+        "dip_score_bei_kauf": 85,   # zur Dokumentation, wird aber NICHT automatisch zu "soft"
+        "signal_stufe": "soft",       # das ist der Eintrag, der tatsächlich zählt
+    },
 ]
